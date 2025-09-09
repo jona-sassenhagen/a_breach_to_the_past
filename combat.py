@@ -58,6 +58,9 @@ class CombatManager:
     def handle_enemy_move_telegraph_phase(self):
         if self.phase_started:
             self.enemy_action_queue = []
+            # Begin turn: apply decay and choose targets
+            for enemy in self.enemies:
+                enemy.begin_turn(self.player, self.enemies)
             for enemy in self.enemies:
                 self.enemy_action_queue.append({'action': 'move', 'enemy': enemy})
                 self.enemy_action_queue.append({'action': 'telegraph', 'enemy': enemy})
@@ -70,10 +73,13 @@ class CombatManager:
                 action = self.enemy_action_queue.pop(0)
                 all_entities = [self.player] + self.enemies # Create all_entities list
                 if action['action'] == 'move':
-                    action['enemy'].move_towards_player(self.player, all_entities)
+                    # Move towards an attack position for selected target
+                    action['enemy'].move_towards_target(action['enemy'].current_target, all_entities)
                 elif action['action'] == 'telegraph':
-                    telegraph = action['enemy'].telegraph(self.player)
+                    telegraph = action['enemy'].telegraph(action['enemy'].current_target, all_entities)
                     if telegraph:
+                        if 'attacker' not in telegraph:
+                            telegraph['attacker'] = action['enemy']
                         self.telegraphs.append(telegraph)
             else:
                 self.phase_complete = True
@@ -112,15 +118,16 @@ class CombatManager:
             if telegraph.get('type') == 'bouncing':
                 start_pos = telegraph['start']
                 path = telegraph['path']
-                projectile = SlimeProjectile(start_pos[0], start_pos[1], path, self.tilemap, self.player.asset_manager)
+                projectile = SlimeProjectile(start_pos[0], start_pos[1], path, self.tilemap, self.player.asset_manager, owner=telegraph.get('attacker'))
                 self.projectiles.append(projectile)
             elif telegraph.get('type') == 'ranged':
                 start_pos = telegraph['start']
                 target_pos = telegraph['pos']
-                projectile = SlimeProjectile(start_pos[0], start_pos[1], [target_pos], self.tilemap, self.player.asset_manager)
+                projectile = SlimeProjectile(start_pos[0], start_pos[1], [target_pos], self.tilemap, self.player.asset_manager, owner=telegraph.get('attacker'))
                 self.projectiles.append(projectile)
             else:
                 target_pos = telegraph['pos']
+                attacker = telegraph.get('attacker')
                 
                 # Check if player is at the target position
                 if self.player.occupies(target_pos[0], target_pos[1]):
@@ -134,6 +141,9 @@ class CombatManager:
                 for enemy in self.enemies:
                     if enemy.occupies(target_pos[0], target_pos[1]):
                         enemy.take_damage(1)
+                        # Grief: bump attacker to the top of victim's hate list
+                        if attacker and hasattr(enemy, 'register_grief'):
+                            enemy.register_grief(attacker)
                         self.vfx_manager.add_particles(target_pos[0] * TILE_SIZE + TILE_SIZE / 2, target_pos[1] * TILE_SIZE + TILE_SIZE / 2, 8, 10)
         
         self.enemies = [enemy for enemy in self.enemies if enemy.hp > 0]
@@ -174,9 +184,15 @@ class CombatManager:
                 for enemy in self.enemies:
                     if enemy.occupies(tile_x, tile_y):
                         enemy.take_damage(1)
+                        # Grief: projectile owner is attacker
+                        if getattr(p, 'owner', None) and hasattr(enemy, 'register_grief'):
+                            enemy.register_grief(p.owner)
                         self.vfx_manager.add_particles(p.x + TILE_SIZE / 2, p.y + TILE_SIZE / 2, 8, 20)
                         p.path = p.path[:p.segment+1]
-        
+        # Immediately prune dead enemies so they "die now" (with VFX already spawned)
+        if self.enemies:
+            self.enemies = [e for e in self.enemies if e.hp > 0]
+
         if not self.projectiles:
             self.phase_complete = True
 
