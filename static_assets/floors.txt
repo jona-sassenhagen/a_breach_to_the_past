@@ -1,0 +1,4 @@
+floor_top_left	floor_top	floor_top_right
+floor_left	floor_center	floor_right
+floor_bottom_left	floor_bottom	floor_bottom_right
+flammable	_	_

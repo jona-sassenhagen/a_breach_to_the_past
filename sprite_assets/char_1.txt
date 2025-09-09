@@ -1,0 +1,1 @@
+char1_1	char1_2	char1_3 char1_4 char1_5 char1_6

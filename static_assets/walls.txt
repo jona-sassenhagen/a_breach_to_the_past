@@ -1,0 +1,3 @@
+top_left_corner	horizontal	top_right_corner
+vertical	dummy_center	dummy_right
+bottom_left	dummy_bottom_center	bottom_right

@@ -1,0 +1,4 @@
+TILE_SIZE = 16
+MAP_WIDTH = 10
+MAP_HEIGHT = 10
+DOOR = "door"
