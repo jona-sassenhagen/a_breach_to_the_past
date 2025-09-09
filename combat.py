@@ -68,8 +68,9 @@ class CombatManager:
             self.action_timer = 0
             if self.enemy_action_queue:
                 action = self.enemy_action_queue.pop(0)
+                all_entities = [self.player] + self.enemies # Create all_entities list
                 if action['action'] == 'move':
-                    action['enemy'].move_towards_player(self.player)
+                    action['enemy'].move_towards_player(self.player, all_entities)
                 elif action['action'] == 'telegraph':
                     telegraph = action['enemy'].telegraph(self.player)
                     if telegraph:
@@ -82,7 +83,8 @@ class CombatManager:
             self.player.reset_moves()
             self.phase_started = False
 
-        self.player.update()
+        all_entities = [self.player] + self.enemies # Create all_entities list
+        self.player.update(all_entities)
         if pyxel.btnp(pyxel.KEY_SPACE):
             self.phase_complete = True
 
@@ -124,6 +126,9 @@ class CombatManager:
                 if self.player.occupies(target_pos[0], target_pos[1]):
                     self.player.take_damage(1)
                     self.vfx_manager.add_particles(target_pos[0] * TILE_SIZE + TILE_SIZE / 2, target_pos[1] * TILE_SIZE + TILE_SIZE / 2, 8, 10)
+                    if self.player.hp <= 0:
+                        print("Game Over!")
+                        pyxel.quit()
 
                 # Check if any enemy is at the target position
                 for enemy in self.enemies:
@@ -163,6 +168,9 @@ class CombatManager:
                     self.player.take_damage(1)
                     self.vfx_manager.add_particles(p.x + TILE_SIZE / 2, p.y + TILE_SIZE / 2, 8, 20)
                     p.path = p.path[:p.segment+1]
+                    if self.player.hp <= 0:
+                        print("Game Over!")
+                        pyxel.quit()
                 for enemy in self.enemies:
                     if enemy.occupies(tile_x, tile_y):
                         enemy.take_damage(1)

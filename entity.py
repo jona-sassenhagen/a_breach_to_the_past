@@ -19,7 +19,7 @@ class Entity:
     def occupies(self, x, y):
         return self.x <= x < self.x + self.width and self.y <= y < self.y + self.height
 
-    def move(self, dx, dy):
+    def move(self, dx, dy, all_entities):
         new_x = self.x + dx
         new_y = self.y + dy
         for i in range(self.width):
@@ -32,6 +32,12 @@ class Entity:
                 door_info = self.tilemap.tile_states.get((new_x + i, new_y + j))
                 if door_info and door_info.get('state') == 'closed':
                     return False
+
+                # Check for collision with other entities
+                for entity in all_entities:
+                    if entity is not self and entity.occupies(new_x + i, new_y + j):
+                        return False
+
         self.x = new_x
         self.y = new_y
         return True
@@ -92,13 +98,13 @@ class Player(Entity):
         self.anim_name = "player"
         self.moves_left = 4
 
-    def update(self):
+    def update(self, all_entities):
         if self.moves_left > 0:
             moved = False
-            if pyxel.btnp(pyxel.KEY_W): moved = self.move(0, -1)
-            elif pyxel.btnp(pyxel.KEY_S): moved = self.move(0, 1)
-            elif pyxel.btnp(pyxel.KEY_A): moved = self.move(-1, 0)
-            elif pyxel.btnp(pyxel.KEY_D): moved = self.move(1, 0)
+            if pyxel.btnp(pyxel.KEY_W): moved = self.move(0, -1, all_entities)
+            elif pyxel.btnp(pyxel.KEY_S): moved = self.move(0, 1, all_entities)
+            elif pyxel.btnp(pyxel.KEY_A): moved = self.move(-1, 0, all_entities)
+            elif pyxel.btnp(pyxel.KEY_D): moved = self.move(1, 0, all_entities)
             if moved:
                 self.moves_left -= 1
 
@@ -117,11 +123,15 @@ class Enemy(Entity):
         self.move_speed = move_speed
         self.attack_type = attack_type
 
-    def move_towards_player(self, player):
+    def move_towards_player(self, player, all_entities):
         path = self.pathfinding(player.x, player.y)
         if path:
             for i in range(1, min(len(path), self.move_speed + 1)):
-                self.x, self.y = path[i]
+                # Check collision before moving
+                if self.move(path[i][0] - self.x, path[i][1] - self.y, all_entities):
+                    self.x, self.y = path[i]
+                else:
+                    break # Stop if collision detected
 
     def telegraph(self, player):
         dx = player.x - self.x
@@ -144,7 +154,7 @@ class Enemy(Entity):
 class Slime(Enemy):
     def __init__(self, x, y, tilemap, asset_manager):
         super().__init__(x, y, tilemap, asset_manager, move_speed=1, attack_type='ranged')
-        self.hp = 1
+        self.hp = 5
         self.anim_name = "slime"
 
     def telegraph(self, player):
@@ -172,7 +182,10 @@ class Slime(Enemy):
             if player.occupies(target_x, target_y):
                 break
 
-        return {'start': (self.x, self.y), 'path': path, 'type': 'bouncing'}
+        telegraph_info = {'start': (self.x, self.y), 'path': path, 'type': 'bouncing'}
+        if telegraph_info:
+            self.hp -= 1 # Slime loses 1 HP when it attacks
+        return telegraph_info
 
 class SlimeProjectile:
     def __init__(self, start_x, start_y, path, tilemap, asset_manager):
