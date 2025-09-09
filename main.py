@@ -3,7 +3,7 @@ import pyxel
 import time
 from asset_manager import AssetManager
 from map import Tilemap
-from entity import Player, Slime, Spider
+from entity import Player, DumbSlime, Spider
 from combat import CombatManager
 from constants import TILE_SIZE
 
@@ -14,7 +14,7 @@ class App:
         self.tilemap = Tilemap(self.asset_manager)
         self.player = Player(4, 4, self.tilemap, self.asset_manager)
         self.enemies = [
-            Slime(2, 2, self.tilemap, self.asset_manager),
+            DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
             Spider(6, 2, self.tilemap, self.asset_manager)
         ]
         self.combat_manager = CombatManager(self.player, self.enemies, self.tilemap)
@@ -37,6 +37,8 @@ class App:
         self.combat_manager.draw_telegraphs()
         self.combat_manager.draw_projectiles()
         self.combat_manager.vfx_manager.draw()
+        # Draw attack order numbers last for visibility across all phases
+        self.combat_manager.draw_attack_order()
         self.draw_ui()
 
     def draw_ui(self):
