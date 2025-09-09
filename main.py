@@ -24,10 +24,6 @@ class App:
         if pyxel.btnp(pyxel.KEY_Q):
             pyxel.quit()
         
-        if self.combat_manager.turn == 'player' and self.combat_manager.turn_started:
-            self.player.reset_moves()
-            self.combat_manager.turn_started = False
-
         self.combat_manager.update()
         self.enemies = self.combat_manager.enemies
         time.sleep(0.05)
@@ -44,8 +40,8 @@ class App:
         self.draw_ui()
 
     def draw_ui(self):
-        turn_text = "Player Turn" if self.combat_manager.turn == 'player' else "Enemy Turn"
-        pyxel.text(80, 5, turn_text, 7)
+        phase_text = str(self.combat_manager.current_phase.name).replace('_', ' ').title()
+        pyxel.text(80, 5, phase_text, 7)
 
         self.draw_hp_bar(self.player.x, self.player.y, self.player.hp)
 

@@ -1,63 +1,68 @@
 import pyxel
 import time
+from enum import Enum
 from map import PIT, WALL
 from entity import SlimeProjectile
 from vfx import VfxManager
 from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT
+
+class GamePhase(Enum):
+    ENEMY_MOVE_TELEGRAPH = 1
+    PLAYER_ACTION = 2
+    ENEMY_ATTACK = 3
+    PROJECTILE_RESOLUTION = 4
 
 class CombatManager:
     def __init__(self, player, enemies, tilemap):
         self.player = player
         self.enemies = enemies
         self.tilemap = tilemap
-        self.state = 'player'  # player, enemy, projectile, enemy_action
-        self.turn = 'player'
-        self.prev_turn = None
-        self.turn_started = True
+        self.current_phase = GamePhase.ENEMY_MOVE_TELEGRAPH
         self.telegraphs = []
         self.projectiles = []
         self.vfx_manager = VfxManager()
         self.enemy_action_queue = []
         self.action_timer = 0
         self.action_delay = 10
+        self.phase_started = True
+        self.phase_complete = False # New flag to signal phase completion
+
+        self._next_phase = {
+            GamePhase.ENEMY_MOVE_TELEGRAPH: GamePhase.PLAYER_ACTION,
+            GamePhase.PLAYER_ACTION: GamePhase.ENEMY_ATTACK,
+            GamePhase.ENEMY_ATTACK: GamePhase.PROJECTILE_RESOLUTION,
+            GamePhase.PROJECTILE_RESOLUTION: GamePhase.ENEMY_MOVE_TELEGRAPH, # Loop back
+        }
 
     def update(self):
-        if self.state == 'player':
-            self.player.update()
-            if pyxel.btnp(pyxel.KEY_SPACE):
-                self.end_player_turn()
-        elif self.state == 'enemy':
-            self.handle_enemy_turn()
-        elif self.state == 'projectile':
-            self.update_projectiles()
-        elif self.state == 'enemy_action':
-            self.handle_enemy_actions()
+        if self.phase_complete:
+            self.current_phase = self._next_phase[self.current_phase]
+            self.phase_started = True
+            self.phase_complete = False
+
+        match self.current_phase:
+            case GamePhase.ENEMY_MOVE_TELEGRAPH:
+                self.handle_enemy_move_telegraph_phase()
+            case GamePhase.PLAYER_ACTION:
+                self.handle_player_action_phase()
+            case GamePhase.ENEMY_ATTACK:
+                self.handle_enemy_attack_phase()
+            case GamePhase.PROJECTILE_RESOLUTION:
+                self.handle_projectile_resolution_phase()
 
         for enemy in self.enemies:
             enemy.update_animation()
 
         self.vfx_manager.update()
 
-    def end_player_turn(self):
-        self.prev_turn = self.turn
-        self.turn = 'enemy'
-        self.state = 'enemy'
-        self.turn_started = True
+    def handle_enemy_move_telegraph_phase(self):
+        if self.phase_started:
+            self.enemy_action_queue = []
+            for enemy in self.enemies:
+                self.enemy_action_queue.append({'action': 'move', 'enemy': enemy})
+                self.enemy_action_queue.append({'action': 'telegraph', 'enemy': enemy})
+            self.phase_started = False
 
-    def handle_enemy_turn(self):
-        self.resolve_enemy_attacks()
-        if self.projectiles:
-            self.state = 'projectile'
-        else:
-            self.build_enemy_action_queue()
-            self.state = 'enemy_action'
-
-    def build_enemy_action_queue(self):
-        for enemy in self.enemies:
-            self.enemy_action_queue.append({'action': 'move', 'enemy': enemy})
-            self.enemy_action_queue.append({'action': 'telegraph', 'enemy': enemy})
-
-    def handle_enemy_actions(self):
         self.action_timer += 1
         if self.action_timer >= self.action_delay:
             self.action_timer = 0
@@ -70,10 +75,31 @@ class CombatManager:
                     if telegraph:
                         self.telegraphs.append(telegraph)
             else:
-                self.prev_turn = self.turn
-                self.turn = 'player'
-                self.state = 'player'
-                self.turn_started = True
+                self.phase_complete = True
+
+    def handle_player_action_phase(self):
+        if self.phase_started:
+            self.player.reset_moves()
+            self.phase_started = False
+
+        self.player.update()
+        if pyxel.btnp(pyxel.KEY_SPACE):
+            self.phase_complete = True
+
+    def handle_enemy_attack_phase(self):
+        self.resolve_enemy_attacks()
+        if self.projectiles:
+            # If there are projectiles, the next phase will be projectile resolution
+            pass # Transition handled by update based on phase_complete
+        else:
+            # If no projectiles, we can directly transition to the next phase
+            pass # Transition handled by update based on phase_complete
+        self.phase_complete = True
+
+    def handle_projectile_resolution_phase(self):
+        self.update_projectiles()
+        if not self.projectiles:
+            self.phase_complete = True
 
     def move_enemies(self):
         for enemy in self.enemies:
@@ -144,8 +170,7 @@ class CombatManager:
                         p.path = p.path[:p.segment+1]
         
         if not self.projectiles:
-            self.build_enemy_action_queue()
-            self.state = 'enemy_action'
+            self.phase_complete = True
 
     def draw_projectiles(self):
         for p in self.projectiles:
