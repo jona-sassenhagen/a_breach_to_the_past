@@ -197,7 +197,7 @@ class Slime(Enemy):
         return ai.telegraph_slime(self, target)
 
 class SlimeProjectile:
-    def __init__(self, start_x, start_y, path, tilemap, asset_manager, owner=None):
+    def __init__(self, start_x, start_y, path, tilemap, asset_manager, owner=None, cosmetic: bool = False):
         self.tilemap = tilemap
         self.asset_manager = asset_manager
         self.start_x = start_x * TILE_SIZE
@@ -213,6 +213,7 @@ class SlimeProjectile:
         self.anim_timer = 0
         self.y_offset = 0.0
         self.owner = owner
+        self.cosmetic = cosmetic
 
     def update_animation(self):
         self.anim_timer += 1
@@ -248,6 +249,31 @@ class SlimeProjectile:
             if anim_seq:
                 img_bank, u, v = anim_seq[self.anim_frame]
                 pyxel.blt(self.x, self.y + self.y_offset, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
+
+class Decor(Entity):
+    def __init__(self, x, y, tilemap, asset_manager, sprite_name: str, rubble_sprite: str = "broken_pot_1"):
+        super().__init__(x, y, tilemap, asset_manager)
+        self.sprite_name = sprite_name
+        self.is_rubble = False
+        self.rubble_ticks = 0  # how many round-starts to persist rubble
+        self._rubble_sprite = rubble_sprite
+
+    def occupies(self, x, y):
+        # Blocks movement only while intact
+        if self.is_rubble:
+            return False
+        return super().occupies(x, y)
+
+    def break_to_rubble(self):
+        self.is_rubble = True
+        self.rubble_ticks = 1
+
+    def draw(self):
+        name = self._rubble_sprite if self.is_rubble else self.sprite_name
+        tile_asset = self.asset_manager.get_tile(name)
+        if tile_asset:
+            img_bank, u, v = tile_asset
+            pyxel.blt(self.x * TILE_SIZE, self.y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
 
 class Spider(Enemy):
     def __init__(self, x, y, tilemap, asset_manager):

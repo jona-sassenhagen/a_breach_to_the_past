@@ -31,10 +31,13 @@ class App:
     def draw(self):
         pyxel.cls(0)
         self.tilemap.draw()
+        self.combat_manager.draw_decor()
         self.player.draw()
         for enemy in self.enemies:
             enemy.draw()
         self.combat_manager.draw_telegraphs()
+        self.combat_manager.draw_attack_renders()
+        self.combat_manager.draw_move_arrow()
         self.combat_manager.draw_projectiles()
         self.combat_manager.vfx_manager.draw()
         # Draw attack order numbers last for visibility across all phases
