@@ -1,0 +1,11 @@
+pot_1	pot_2	white_pot_1	white_pot_2	ornate_pot_1	ornate_pot_2	broken_pot_1	broken_pot_2
+closet	closet_gems_1	closet_gems_2	closet_food	closet_food_eaten	bookcase_1	bookcase_2	bookcase_spiderwebs
+counter_1	counter_2	counter_3	counter_4	counter_5	counter_6	counter_7	counter_8
+wtf_1	wtf_2	wtf_3	wtf_4	wtf_5	wtf_6	wtf_7	wtf_8
+chair_left	table_round	chair_right	chair_left_grey	table_grey	chair_right_grey	throne	empty
+candle	candles	candelier	candelier_multi	candle_dark	candles_dark candelier_dark	candelier_multi_dark
+bed_vertical	bed_horizontal	board_vertical	board_horizontal	bed_green_vertical	bed_green_horizontal	bed_chessboard_vertical	bed_chessboard_horizontal
+empty	empty	empty	empty	empty	chest	casket_vertical	casket_horizontal
+armor_stand_empty	armor_stand_armor	weapon_stand_left_empty	weapon_stand_left_sword	weapon_stand_right_empty	weapon_stand_right_sword	firewood	empty
+skull_white	bones_white	skull_yellow	bones_yellow	skull_grey	bones_grey	empty	empty
+bones_2_white	bones_3_white	bones_2_yellow	bones_3_yellow	bones_2_grey	bones_3_grey	empty	empty

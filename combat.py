@@ -265,8 +265,32 @@ class CombatManager:
 
         # Compute melee hits simultaneously against snapshot of positions
         for t in melee_teles:
-            target_pos = t['pos']
             attacker = t.get('attacker')
+            target_pos = t.get('pos')
+
+            # Compute dynamic target for directional melee (e.g., spider)
+            if t.get('type') == 'melee_dir':
+                # Determine cardinal direction toward current hate target at attack time
+                dx = 1
+                dy = 0
+                if attacker is not None:
+                    target_ent = getattr(attacker, 'current_target', None)
+                    if target_ent is None or getattr(target_ent, 'hp', 0) <= 0:
+                        # No valid hate target: skip this attack
+                        continue
+                    pdx = target_ent.x - attacker.x
+                    pdy = target_ent.y - attacker.y
+                    if abs(pdx) >= abs(pdy):
+                        dx = 1 if pdx > 0 else -1 if pdx < 0 else 0
+                        dy = 0
+                    else:
+                        dy = 1 if pdy > 0 else -1 if pdy < 0 else 0
+                        dx = 0
+                target_pos = (attacker.x + dx, attacker.y + dy) if attacker is not None else target_pos
+
+            # If no valid target position determined, skip
+            if target_pos is None:
+                continue
 
             # Player hit check
             if self.player.occupies(target_pos[0], target_pos[1]):
@@ -639,15 +663,36 @@ class CombatManager:
                     x = pos[0] * TILE_SIZE + TILE_SIZE // 2
                     y = pos[1] * TILE_SIZE + TILE_SIZE // 2
                     pyxel.circ(x, y, 2, 8)
+            elif telegraph.get('type') == 'melee_dir':
+                start_pos = telegraph['start']
+                sx = start_pos[0] * TILE_SIZE + TILE_SIZE // 2
+                sy = start_pos[1] * TILE_SIZE + TILE_SIZE // 2
+                attacker = telegraph.get('attacker')
+                # Aim strictly at attacker's current hate target; if none, do not draw
+                target_ent = getattr(attacker, 'current_target', None) if attacker is not None else None
+                if target_ent is None:
+                    continue
+                dx = 1
+                dy = 0
+                pdx = target_ent.x - attacker.x
+                pdy = target_ent.y - attacker.y
+                if abs(pdx) >= abs(pdy):
+                    dx = 1 if pdx > 0 else -1 if pdx < 0 else 0
+                    dy = 0
+                else:
+                    dy = 1 if pdy > 0 else -1 if pdy < 0 else 0
+                    dx = 0
+                ex = (start_pos[0] + dx) * TILE_SIZE + TILE_SIZE // 2
+                ey = (start_pos[1] + dy) * TILE_SIZE + TILE_SIZE // 2
+                pyxel.line(sx, sy, ex, ey, 8)
+                pyxel.circ(ex, ey, 2, 8)
             else:
                 start_pos = telegraph['start']
                 end_pos = telegraph['pos']
-                
                 start_x = start_pos[0] * TILE_SIZE + TILE_SIZE // 2
                 start_y = start_pos[1] * TILE_SIZE + TILE_SIZE // 2
                 end_x = end_pos[0] * TILE_SIZE + TILE_SIZE // 2
                 end_y = end_pos[1] * TILE_SIZE + TILE_SIZE // 2
-
                 pyxel.line(start_x, start_y, end_x, end_y, 8)
                 pyxel.circ(end_x, end_y, 2, 8)
 
@@ -669,6 +714,29 @@ class CombatManager:
                     x = pos[0] * TILE_SIZE + TILE_SIZE // 2
                     y = pos[1] * TILE_SIZE + TILE_SIZE // 2
                     pyxel.circ(x, y, 2, 7)
+            elif telegraph.get('type') == 'melee_dir':
+                start_pos = telegraph['start']
+                sx = start_pos[0] * TILE_SIZE + TILE_SIZE // 2
+                sy = start_pos[1] * TILE_SIZE + TILE_SIZE // 2
+                attacker = telegraph.get('attacker')
+                # Aim strictly at attacker's current hate target; if none, do not draw
+                target_ent = getattr(attacker, 'current_target', None) if attacker is not None else None
+                if target_ent is None:
+                    continue
+                dx = 1
+                dy = 0
+                pdx = target_ent.x - attacker.x
+                pdy = target_ent.y - attacker.y
+                if abs(pdx) >= abs(pdy):
+                    dx = 1 if pdx > 0 else -1 if pdx < 0 else 0
+                    dy = 0
+                else:
+                    dy = 1 if pdy > 0 else -1 if pdy < 0 else 0
+                    dx = 0
+                ex = (start_pos[0] + dx) * TILE_SIZE + TILE_SIZE // 2
+                ey = (start_pos[1] + dy) * TILE_SIZE + TILE_SIZE // 2
+                pyxel.line(sx, sy, ex, ey, 7)
+                pyxel.circ(ex, ey, 2, 7)
             else:
                 start_pos = telegraph['start']
                 end_pos = telegraph['pos']

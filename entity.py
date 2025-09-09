@@ -343,6 +343,11 @@ class Spider(Enemy):
                 if self.palette_swap:
                     pyxel.pal()
 
+    def telegraph(self, target: Entity, all_entities: Optional[List[Entity]] = None):
+        # Dynamic directional telegraph toward the player; range 1
+        # Resolution will compute the final tile at attack time.
+        return {'start': (self.x, self.y), 'type': 'melee_dir', 'attacker': self}
+
 class DumbSlime(Slime):
     def __init__(self, x, y, tilemap, asset_manager):
         super().__init__(x, y, tilemap, asset_manager)
