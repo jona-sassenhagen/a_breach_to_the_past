@@ -108,6 +108,8 @@ class CombatManager:
         self.post_player_delay_frames = 12
         self.post_player_delay = 0
         self.locked_enemy_plan: list[dict] = []
+        self.pending_move_tile: tuple[int, int] | None = None
+        self.pending_move_path: list[tuple[int, int]] = []
 
         # Deterministic initiative order and attack order visualization
         self.enemy_initiative = list(enemies)
@@ -284,6 +286,7 @@ class CombatManager:
         if self.phase_started:
             self.player.reset_moves()
             self.locked_enemy_plan = []
+            self._clear_pending_move()
             self.phase_started = False
 
         all_entities = [self.player] + self.enemies + self.decor_objects
@@ -298,23 +301,29 @@ class CombatManager:
             if clicked_tile and clicked_tile in self.player_reachable_tiles:
                 path = self._reconstruct_player_path(clicked_tile)
                 if path:
-                    start_pos = (self.player.x, self.player.y)
-                    if self.player.follow_path(path, all_entities):
-                        steps = len(path)
-                        self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
-                        self._finalize_player_turn()
+                    if self.pending_move_tile == clicked_tile and self.pending_move_path:
+                        start_pos = (self.player.x, self.player.y)
+                        if self.player.follow_path(self.pending_move_path, all_entities):
+                            steps = len(self.pending_move_path)
+                            self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
+                            self._finalize_player_turn()
                         return
+                    self._set_pending_move(clicked_tile, path)
+                    return
             if clicked_tile and self._handle_door_click(clicked_tile, all_entities):
                 self._reset_hover_preview()
+                self._clear_pending_move()
                 return
 
         moved = self.player.try_keyboard_move(all_entities)
         if moved:
             all_entities = [self.player] + self.enemies + self.decor_objects
             self._refresh_player_reachability(all_entities)
+            self._clear_pending_move()
 
         if self._check_keyboard_room_transition():
             self._reset_hover_preview()
+            self._clear_pending_move()
             return
 
         if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) or getattr(self.player, 'moves_left', 0) <= 0:
@@ -890,6 +899,29 @@ class CombatManager:
                         color = 2 if ((x + y + ox + oy) % 8) < 4 else 13
                         pyxel.pset(base_x + ox, base_y + oy, color)
 
+    def draw_pending_move_preview(self, player_anim_frame, player_anim_name, asset_manager):
+        if self.player_dead or self.room_transition:
+            return
+        if not self.pending_move_tile or not self.pending_move_path:
+            return
+
+        x, y = self.pending_move_tile
+        px = x * TILE_SIZE
+        py = y * TILE_SIZE
+        pyxel.rectb(px, py, TILE_SIZE, TILE_SIZE, 10)
+
+        for step in self.pending_move_path:
+            sx, sy = step
+            pyxel.rect(sx * TILE_SIZE + 4, sy * TILE_SIZE + 4, TILE_SIZE - 8, TILE_SIZE - 8, 2)
+
+        anim_seq = asset_manager.get_anim(player_anim_name)
+        if anim_seq:
+            img_bank, u, v = anim_seq[player_anim_frame % len(anim_seq)]
+            pyxel.pal(7, 10)
+            pyxel.pal(11, 10)
+            pyxel.blt(px, py, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
+            pyxel.pal()
+
     def draw_room_transition_overlay(self):
         if self.player_dead:
             return
@@ -1013,6 +1045,14 @@ class CombatManager:
         self.hover_timer = 0
         self.hover_predictions = []
 
+    def _set_pending_move(self, tile, path):
+        self.pending_move_tile = tile
+        self.pending_move_path = list(path)
+
+    def _clear_pending_move(self):
+        self.pending_move_tile = None
+        self.pending_move_path = []
+
     def _update_hover_preview(self):
         if self.player_dead or self.room_transition:
             self._reset_hover_preview()
@@ -1116,6 +1156,7 @@ class CombatManager:
         self.phase_complete = True
         self.post_player_delay = self.post_player_delay_frames
         self._reset_hover_preview()
+        self._clear_pending_move()
         self._lock_enemy_plan()
 
     def _compute_enemy_hover_predictions(self, target_tile):

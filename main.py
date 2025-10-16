@@ -64,6 +64,7 @@ class App:
         # Draw telegraphs beneath entities so sprites appear on top
         self.combat_manager.draw_telegraphs()
         self.player.draw()
+        self.combat_manager.draw_pending_move_preview(self.player.anim_frame, self.player.anim_name, self.player.asset_manager)
         for enemy in self.enemies:
             enemy.draw()
         self.combat_manager.draw_attack_renders()
@@ -142,6 +143,7 @@ class App:
             text_y += 16
 
         lines = [
+            "Tap once to preview, twice to move",
             "Collect treasure and stay alive",
             "Monsters telegraph movement and attacks",
             "Coax foes into wrecking furniture",
