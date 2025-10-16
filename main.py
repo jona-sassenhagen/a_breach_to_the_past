@@ -17,7 +17,7 @@ from constants import TILE_SIZE
 
 class App:
     def __init__(self):
-        pyxel.init(160, 160, title="LEGENDS OF THE BREACH")
+        pyxel.init(160, 160, title="DUNGEON BREACH")
         pyxel.mouse(True)
         self.asset_manager = None
         self.tilemap = None
@@ -138,7 +138,7 @@ class App:
             pyxel.blt(x, y, self.title_image_bank, 0, 0, width, height, 0)
             text_y = y + height + 8
         else:
-            pyxel.text(20, text_y, "LEGENDS OF THE BREACH", 7)
+            pyxel.text(20, text_y, "DUNGEON BREACH", 7)
             text_y += 16
 
         lines = [
