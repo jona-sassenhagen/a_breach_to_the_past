@@ -30,6 +30,14 @@ class CombatManager:
         self.phase_started = True
         self.phase_complete = False # New flag to signal phase completion
         self.next_phase_override = None
+        self.player_reachable_tiles = {}
+        self.player_reach_parents = {}
+        self.player_reach_origin = (player.x, player.y)
+        self._shade_offsets = [(ox, oy) for ox in range(TILE_SIZE) for oy in range(TILE_SIZE) if (ox + oy) % 4 == 0]
+        self.room_transition = None
+        self._transition_frames = 10
+        self._screen_px_w = MAP_WIDTH * TILE_SIZE
+        self._screen_px_h = MAP_HEIGHT * TILE_SIZE
 
         # Deterministic initiative order and attack order visualization
         self.enemy_initiative = list(enemies)
@@ -74,6 +82,10 @@ class CombatManager:
         }
 
     def update(self):
+        if self.room_transition:
+            self._update_room_transition()
+            return
+
         if self.phase_complete:
             if self.next_phase_override is not None:
                 self.current_phase = self.next_phase_override
@@ -117,6 +129,9 @@ class CombatManager:
 
         # Always allow passive pickup when standing on treasure
         self._pickup_treasure_under_player()
+
+        if self.current_phase != GamePhase.PLAYER_ACTION:
+            self.player_reachable_tiles = {}
 
         # Decay one-frame (or few-frames) attack overlay
         if self.attack_render_ticks > 0:
@@ -183,24 +198,36 @@ class CombatManager:
             self.player.reset_moves()
             self.phase_started = False
 
-        all_entities = [self.player] + self.enemies + self.decor_objects # Create all_entities list
-        prev_x, prev_y = self.player.x, self.player.y
-        self.player.update(all_entities)
-        moved = (self.player.x != prev_x or self.player.y != prev_y)
-        # Trigger room change only when pressing INTO the door while already adjacent (no movement this frame)
+        all_entities = [self.player] + self.enemies + self.decor_objects
+        self._refresh_player_reachability(all_entities)
+
+        moved = False
+        clicked_tile = None
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
+            clicked_tile = self._mouse_tile()
+            if clicked_tile and clicked_tile in self.player_reachable_tiles:
+                steps = self.player_reachable_tiles[clicked_tile]
+                if steps > 0:
+                    path = self._reconstruct_player_path(clicked_tile)
+                    if path:
+                        start_pos = (self.player.x, self.player.y)
+                        moved = self.player.follow_path(path, all_entities)
+                        if moved:
+                            self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
+            if not moved and clicked_tile and self._handle_door_click(clicked_tile, all_entities):
+                return
+
         if not moved:
-            # Top doors: player stands at y==1 and presses up into the top wall
-            if self.player.y == 1 and self.player.x in getattr(self.tilemap, 'top_door_xs', []):
-                if pyxel.btnp(pyxel.KEY_W):
-                    self._generate_room('top', self.player.x)
-                    return
-            # Bottom doors: player stands at y==MAP_HEIGHT-2 and presses down into the bottom wall
-            if self.player.y == MAP_HEIGHT - 2 and self.player.x in getattr(self.tilemap, 'bottom_door_xs', []):
-                if pyxel.btnp(pyxel.KEY_S):
-                    self._generate_room('bottom', self.player.x)
-                    return
-        # End player phase on spacebar or when out of moves
-        if pyxel.btnp(pyxel.KEY_SPACE) or getattr(self.player, 'moves_left', 0) <= 0:
+            moved = self.player.try_keyboard_move(all_entities)
+
+        if not moved and self._check_keyboard_room_transition():
+            return
+
+        if moved:
+            all_entities = [self.player] + self.enemies + self.decor_objects
+            self._refresh_player_reachability(all_entities)
+
+        if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) or getattr(self.player, 'moves_left', 0) <= 0:
             self.phase_complete = True
 
     def handle_enemy_attack_phase(self):
@@ -715,6 +742,52 @@ class CombatManager:
         for p in self.projectiles:
             p.draw()
 
+    def draw_player_reachability_overlay(self):
+        if self.current_phase != GamePhase.PLAYER_ACTION:
+            return
+        if not self.player_reachable_tiles:
+            return
+        if self.room_transition:
+            return
+
+        top_doors = getattr(self.tilemap, 'top_door_xs', [])
+        bottom_doors = getattr(self.tilemap, 'bottom_door_xs', [])
+        for y in range(MAP_HEIGHT):
+            for x in range(MAP_WIDTH):
+                if (x, y) not in self.player_reachable_tiles:
+                    if y == 0 and x in top_doors and (x, 1) in self.player_reachable_tiles:
+                        continue
+                    if y == MAP_HEIGHT - 1 and x in bottom_doors and (x, MAP_HEIGHT - 2) in self.player_reachable_tiles:
+                        continue
+                    base_x = x * TILE_SIZE
+                    base_y = y * TILE_SIZE
+                    for ox, oy in self._shade_offsets:
+                        color = 2 if ((x + y + ox + oy) % 8) < 4 else 13
+                        pyxel.pset(base_x + ox, base_y + oy, color)
+
+    def draw_room_transition_overlay(self):
+        if not self.room_transition:
+            return
+        rt = self.room_transition
+        if rt['state'] == 'fade_out':
+            level = min(1.0, rt['timer'] / self._transition_frames)
+        else:
+            level = max(0.0, 1.0 - rt['timer'] / self._transition_frames)
+        self._draw_fade_overlay(level)
+
+    def _draw_fade_overlay(self, level: float):
+        if level <= 0:
+            return
+        if level >= 1:
+            pyxel.rect(0, 0, self._screen_px_w, self._screen_px_h, 0)
+            return
+        mod = 8
+        threshold = max(1, int(level * mod))
+        for y in range(self._screen_px_h):
+            for x in range(self._screen_px_w):
+                if ((x + y) % mod) < threshold:
+                    pyxel.pset(x, y, 0)
+
     def draw_decor(self):
         for d in self.decor_objects:
             d.draw()
@@ -761,6 +834,117 @@ class CombatManager:
             # Increment player's coin count
             coins = getattr(self.player, 'coins', 0)
             setattr(self.player, 'coins', coins + picked)
+
+    def _refresh_player_reachability(self, all_entities):
+        reachable, parents = self.player.compute_reachable(all_entities)
+        self.player_reachable_tiles = reachable
+        self.player_reach_parents = parents
+        self.player_reach_origin = (self.player.x, self.player.y)
+
+    def _reconstruct_player_path(self, target_tile):
+        if target_tile == self.player_reach_origin:
+            return []
+
+        path = []
+        current = target_tile
+        while current != self.player_reach_origin:
+            parent = self.player_reach_parents.get(current)
+            if parent is None:
+                return []
+            path.append(current)
+            current = parent
+        path.reverse()
+        return path
+
+    def _mouse_tile(self):
+        tx = pyxel.mouse_x // TILE_SIZE
+        ty = pyxel.mouse_y // TILE_SIZE
+        if 0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT:
+            return (tx, ty)
+        return None
+
+    def _show_move_arrow(self, start, end, steps=1):
+        if start == end:
+            return
+        duration = max(6, steps * 3)
+        self.move_arrow = {'start': start, 'end': end}
+        self.move_arrow_ticks = duration
+
+    def _start_room_transition(self, entry_from, door_x):
+        self.room_transition = {
+            'state': 'fade_out',
+            'timer': 0,
+            'entry_from': entry_from,
+            'door_x': door_x,
+        }
+        self.player_reachable_tiles = {}
+        self.player_reach_parents = {}
+
+    def _update_room_transition(self):
+        if not self.room_transition:
+            return
+        rt = self.room_transition
+        rt['timer'] += 1
+        if rt['state'] == 'fade_out':
+            if rt['timer'] >= self._transition_frames:
+                entry_from = rt['entry_from']
+                door_x = rt['door_x']
+                self._generate_room(entry_from, door_x)
+                self.room_transition = {
+                    'state': 'fade_in',
+                    'timer': 0,
+                    'entry_from': entry_from,
+                    'door_x': door_x,
+                }
+        elif rt['state'] == 'fade_in':
+            if rt['timer'] >= self._transition_frames:
+                self.room_transition = None
+
+    def _handle_door_click(self, tile, all_entities):
+        x, y = tile
+        top_doors = getattr(self.tilemap, 'top_door_xs', [])
+        bottom_doors = getattr(self.tilemap, 'bottom_door_xs', [])
+
+        if y == 0 and x in top_doors:
+            return self._approach_door_and_enter('top', x, (x, 1), all_entities)
+
+        if y == MAP_HEIGHT - 1 and x in bottom_doors:
+            return self._approach_door_and_enter('bottom', x, (x, MAP_HEIGHT - 2), all_entities)
+
+        return False
+
+    def _approach_door_and_enter(self, entry_from, door_x, entry_tile, all_entities):
+        if self.room_transition:
+            return False
+        if (self.player.x, self.player.y) != entry_tile:
+            start_pos = (self.player.x, self.player.y)
+            if entry_tile not in self.player_reachable_tiles:
+                return False
+            path = self._reconstruct_player_path(entry_tile)
+            if not path and entry_tile != self.player_reach_origin:
+                return False
+            steps = len(path)
+            moved = self.player.follow_path(path, all_entities) if path else True
+            if not moved:
+                return False
+            if path:
+                self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
+
+        self._start_room_transition(entry_from, door_x)
+        return True
+
+    def _check_keyboard_room_transition(self):
+        # Top doors: player stands at y==1 and presses up into the top wall
+        if self.player.y == 1 and self.player.x in getattr(self.tilemap, 'top_door_xs', []):
+            if pyxel.btnp(pyxel.KEY_W):
+                self._generate_room('top', self.player.x)
+                return True
+        # Bottom doors: player stands at y==MAP_HEIGHT-2 and presses down into the bottom wall
+        if self.player.y == MAP_HEIGHT - 2 and self.player.x in getattr(self.tilemap, 'bottom_door_xs', []):
+            if pyxel.btnp(pyxel.KEY_S):
+                self._generate_room('bottom', self.player.x)
+                return True
+        return False
 
 
     def telegraph_enemy_attacks(self):

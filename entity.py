@@ -23,29 +23,38 @@ class Entity:
     def occupies(self, x, y):
         return self.x <= x < self.x + self.width and self.y <= y < self.y + self.height
 
-    def move(self, dx, dy, all_entities):
-        new_x = self.x + dx
-        new_y = self.y + dy
+    def can_occupy(self, new_x: int, new_y: int, all_entities) -> bool:
+        """Check whether the entity could stand at the given tile."""
         for i in range(self.width):
             for j in range(self.height):
-                if not (0 <= new_x + i < MAP_WIDTH and 0 <= new_y + j < MAP_HEIGHT):
+                tx = new_x + i
+                ty = new_y + j
+                if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
                     return False
-                tile = self.tilemap.tiles[new_y + j][new_x + i]
+                tile = self.tilemap.tiles[ty][tx]
                 if tile == PIT:
                     return False
                 # Allow passage through walls only if there is an open door state at this tile
                 if tile == WALL:
-                    door_info = self.tilemap.tile_states.get((new_x + i, new_y + j))
+                    door_info = self.tilemap.tile_states.get((tx, ty))
                     if not (door_info and door_info.get('state') == 'open'):
                         return False
-                door_info = self.tilemap.tile_states.get((new_x + i, new_y + j))
+                door_info = self.tilemap.tile_states.get((tx, ty))
                 if door_info and door_info.get('state') == 'closed':
                     return False
 
                 # Check for collision with other entities
                 for entity in all_entities:
-                    if entity is not self and entity.occupies(new_x + i, new_y + j):
+                    if entity is not self and entity.occupies(tx, ty):
                         return False
+
+        return True
+
+    def move(self, dx, dy, all_entities):
+        new_x = self.x + dx
+        new_y = self.y + dy
+        if not self.can_occupy(new_x, new_y, all_entities):
+            return False
 
         self.x = new_x
         self.y = new_y
@@ -125,15 +134,63 @@ class Player(Entity):
         self.anim_name = "player"
         self.moves_left = 4
 
-    def update(self, all_entities):
-        if self.moves_left > 0:
-            moved = False
-            if pyxel.btnp(pyxel.KEY_W): moved = self.move(0, -1, all_entities)
-            elif pyxel.btnp(pyxel.KEY_S): moved = self.move(0, 1, all_entities)
-            elif pyxel.btnp(pyxel.KEY_A): moved = self.move(-1, 0, all_entities)
-            elif pyxel.btnp(pyxel.KEY_D): moved = self.move(1, 0, all_entities)
-            if moved:
-                self.moves_left -= 1
+    def try_keyboard_move(self, all_entities) -> bool:
+        if self.moves_left <= 0:
+            return False
+
+        moved = False
+        if pyxel.btnp(pyxel.KEY_W):
+            moved = self.move(0, -1, all_entities)
+        elif pyxel.btnp(pyxel.KEY_S):
+            moved = self.move(0, 1, all_entities)
+        elif pyxel.btnp(pyxel.KEY_A):
+            moved = self.move(-1, 0, all_entities)
+        elif pyxel.btnp(pyxel.KEY_D):
+            moved = self.move(1, 0, all_entities)
+
+        if moved:
+            self.moves_left = max(0, self.moves_left - 1)
+        return moved
+
+    def compute_reachable(self, all_entities):
+        moves = max(0, self.moves_left)
+        origin = (self.x, self.y)
+        reachable = {origin: 0}
+        parents = {}
+        frontier = deque([origin])
+
+        while frontier:
+            cx, cy = frontier.popleft()
+            cost = reachable[(cx, cy)]
+            if cost >= moves:
+                continue
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nx, ny = cx + dx, cy + dy
+                if (nx, ny) in reachable:
+                    continue
+                if not self.can_occupy(nx, ny, all_entities):
+                    continue
+                reachable[(nx, ny)] = cost + 1
+                parents[(nx, ny)] = (cx, cy)
+                frontier.append((nx, ny))
+
+        return reachable, parents
+
+    def follow_path(self, path, all_entities) -> bool:
+        if not path:
+            return False
+
+        steps_taken = 0
+        for nx, ny in path:
+            if not self.can_occupy(nx, ny, all_entities):
+                return False
+            self.x = nx
+            self.y = ny
+            steps_taken += 1
+
+        if steps_taken > 0:
+            self.moves_left = max(0, self.moves_left - steps_taken)
+        return steps_taken > 0
 
     def reset_moves(self):
         self.moves_left = 4

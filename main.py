@@ -10,9 +10,11 @@ from constants import TILE_SIZE
 class App:
     def __init__(self):
         pyxel.init(160, 160, title="Legends of the Breach")
+        pyxel.mouse(True)
         self.asset_manager = AssetManager()
         self.tilemap = Tilemap(self.asset_manager)
-        self.player = Player(4, 4, self.tilemap, self.asset_manager)
+        start_x = getattr(self.tilemap, 'top_door_xs', [1])[0]
+        self.player = Player(start_x, 1, self.tilemap, self.asset_manager)
         self.enemies = [
             DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
             Spider(6, 2, self.tilemap, self.asset_manager),
@@ -32,6 +34,7 @@ class App:
     def draw(self):
         pyxel.cls(0)
         self.tilemap.draw()
+        self.combat_manager.draw_player_reachability_overlay()
         self.combat_manager.draw_decor()
         self.combat_manager.draw_treasure()
         # Draw telegraphs beneath entities so sprites appear on top
@@ -46,6 +49,7 @@ class App:
         # Draw attack order numbers last for visibility across all phases
         self.combat_manager.draw_attack_order()
         self.draw_ui()
+        self.combat_manager.draw_room_transition_overlay()
 
     def draw_ui(self):
         phase_text = str(self.combat_manager.current_phase.name).replace('_', ' ').title()
