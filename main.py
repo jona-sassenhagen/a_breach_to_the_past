@@ -28,13 +28,18 @@ class App:
         self.title_image_bank = 2
         self.title_image_loaded, self.title_image_size = self._load_title_image()
         self.credits = self._load_credits()
+        self.title_frame_counter = 0
+        self.title_input_armed = False
         pyxel.run(self.update, self.draw)
 
     def update(self):
         if pyxel.btnp(pyxel.KEY_Q):
             pyxel.quit()
         if self.in_title:
-            if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) or pyxel.btnp(pyxel.KEY_SPACE):
+            self.title_frame_counter += 1
+            if self.title_frame_counter >= 10:
+                self.title_input_armed = True
+            if self.title_input_armed and (pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) or pyxel.btnp(pyxel.KEY_SPACE)):
                 self.in_title = False
                 self.reset_world()
             return

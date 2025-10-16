@@ -9,6 +9,8 @@ This is a silly game I vibe coded together as an exploration of the idea: Zelda 
 - Coax foes into breaking each other and furniture to expose more loot
 - Good luck
 
+Play the game [here](https://jona-sassenhagen.github.io/a_breach_to_the_past/)
+
 # Credits
 
 See credits.txt for the awesome creators of the CCBA art used here. They deserve a much better game to be made out of it.
