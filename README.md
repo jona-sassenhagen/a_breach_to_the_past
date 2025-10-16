@@ -1,6 +1,6 @@
 # Dungeon Breach
 
-![Dungeon Breach](static_assets/title.png)
+![Dungeon Breach](readme_title.png)
 
 This is a silly game I vibe coded together as an exploration of the idea: Zelda + Into the Breach.
 
