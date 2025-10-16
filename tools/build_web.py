@@ -20,9 +20,6 @@ FILES_TO_COPY = [
     "ai.py",
     "ui.py",
     "vfx.py",
-    "decor.txt",
-    "heart.txt",
-    "assets.pyxres",
 ]
 DIRS_TO_COPY = [
     "static_assets",
