@@ -18,6 +18,7 @@ class Entity:
         self.anim_frame = 0
         self.anim_timer = 0
         self.palette_swap = None  # Optional dict of {src_color: dst_color}
+        self.colkey = 0  # Default transparency color index
 
     def occupies(self, x, y):
         return self.x <= x < self.x + self.width and self.y <= y < self.y + self.height
@@ -30,8 +31,13 @@ class Entity:
                 if not (0 <= new_x + i < MAP_WIDTH and 0 <= new_y + j < MAP_HEIGHT):
                     return False
                 tile = self.tilemap.tiles[new_y + j][new_x + i]
-                if tile == WALL or tile == PIT:
+                if tile == PIT:
                     return False
+                # Allow passage through walls only if there is an open door state at this tile
+                if tile == WALL:
+                    door_info = self.tilemap.tile_states.get((new_x + i, new_y + j))
+                    if not (door_info and door_info.get('state') == 'open'):
+                        return False
                 door_info = self.tilemap.tile_states.get((new_x + i, new_y + j))
                 if door_info and door_info.get('state') == 'closed':
                     return False
@@ -63,7 +69,7 @@ class Entity:
                 if self.palette_swap:
                     for src, dst in self.palette_swap.items():
                         pyxel.pal(src, dst)
-                pyxel.blt(self.x * TILE_SIZE, self.y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
+                pyxel.blt(self.x * TILE_SIZE, self.y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, self.colkey)
                 if self.palette_swap:
                     pyxel.pal()
 
@@ -257,6 +263,8 @@ class Decor(Entity):
         self.is_rubble = False
         self.rubble_ticks = 0  # how many round-starts to persist rubble
         self._rubble_sprite = rubble_sprite
+        # Use chroma key pink for decor so interior black stays visible when art uses black
+        self.colkey = 14
 
     def occupies(self, x, y):
         # Blocks movement only while intact
@@ -273,7 +281,24 @@ class Decor(Entity):
         tile_asset = self.asset_manager.get_tile(name)
         if tile_asset:
             img_bank, u, v = tile_asset
-            pyxel.blt(self.x * TILE_SIZE, self.y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
+            pyxel.blt(self.x * TILE_SIZE, self.y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, self.colkey)
+
+class Treasure(Entity):
+    def __init__(self, x, y, tilemap, asset_manager, sprite_name: str):
+        super().__init__(x, y, tilemap, asset_manager)
+        self.sprite_name = sprite_name
+        # Use chroma key pink for treasure to match chroma-fixed atlas
+        self.colkey = 14
+
+    def occupies(self, x, y):
+        # Treasure is passable; do not block movement
+        return False
+
+    def draw(self):
+        tile_asset = self.asset_manager.get_tile(self.sprite_name)
+        if tile_asset:
+            img_bank, u, v = tile_asset
+            pyxel.blt(self.x * TILE_SIZE, self.y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, self.colkey)
 
 class Spider(Enemy):
     def __init__(self, x, y, tilemap, asset_manager):
@@ -374,3 +399,48 @@ class DumbSlime(Slime):
     # Use base begin_turn to respect hate/grief mechanics
 
     # Use base draw without overlays; dumb slime matches original palette
+
+class Spinner(Enemy):
+    def __init__(self, x, y, tilemap, asset_manager):
+        super().__init__(x, y, tilemap, asset_manager, move_speed=2, attack_type='melee')
+        self.hp = 2
+        self.anim_name = "spinner_idle"
+        self._attack_anim_ticks = 0
+        self._attack_step_ticks = 3
+
+    def telegraph(self, target: Entity, all_entities: Optional[List[Entity]] = None):
+        tiles: List[Tuple[int, int]] = []
+        for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+            tx, ty = self.x + dx, self.y + dy
+            if 0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT:
+                tiles.append((tx, ty))
+        return {'start': (self.x, self.y), 'type': 'plus', 'tiles': tiles, 'attacker': self}
+
+    def update_animation(self):
+        if self._attack_anim_ticks > 0:
+            self.anim_timer += 1
+            seq = self.asset_manager.get_anim('spinner_attack') or []
+            total = len(seq) if seq else 1
+            if self.anim_timer % max(1, self._attack_step_ticks) == 0:
+                self.anim_frame += 1
+                if self.anim_frame >= total:
+                    self._attack_anim_ticks = 0
+                    self.anim_name = "spinner_idle"
+                    self.anim_frame = 0
+                    self.anim_timer = 0
+                    return
+            self._attack_anim_ticks -= 1
+            if self._attack_anim_ticks <= 0:
+                self.anim_name = "spinner_idle"
+                self.anim_frame = 0
+                self.anim_timer = 0
+            return
+        super().update_animation()
+
+    def trigger_attack_anim(self):
+        self.anim_name = "spinner_attack"
+        seq = self.asset_manager.get_anim('spinner_attack') or []
+        self.anim_frame = 0
+        self.anim_timer = 0
+        total = len(seq)
+        self._attack_anim_ticks = max(1, total) * max(1, self._attack_step_ticks)

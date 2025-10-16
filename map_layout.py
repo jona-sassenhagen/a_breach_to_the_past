@@ -9,10 +9,7 @@ def get_layout():
             elif x == MAP_WIDTH - 1 and y == 0: layout[y][x] = "top_right_corner"
             elif x == 0 and y == MAP_HEIGHT - 1: layout[y][x] = "bottom_left"
             elif x == MAP_WIDTH - 1 and y == MAP_HEIGHT - 1: layout[y][x] = "bottom_right"
-            elif y == 0 and x == MAP_WIDTH // 2: layout[y][x] = "horizontal" # Top door location
-            elif y == MAP_HEIGHT - 1 and x == MAP_WIDTH // 2: layout[y][x] = "horizontal" # Bottom door location
-            elif x == 0 and y == MAP_HEIGHT // 2: layout[y][x] = "vertical" # Left door location
-            elif x == MAP_WIDTH - 1 and y == MAP_HEIGHT // 2: layout[y][x] = "vertical" # Right door location
+            # Doors: handled via tile_states; keep walls continuous in tiles
             elif y == 0: layout[y][x] = "horizontal"
             elif y == MAP_HEIGHT - 1: layout[y][x] = "horizontal"
             elif x == 0: layout[y][x] = "vertical"

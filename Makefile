@@ -6,7 +6,7 @@ PYTHON = python3
 # Virtual environment directory
 VENV = venv
 
-.PHONY: all install run clean
+.PHONY: all install run clean web
 
 all: run
 
@@ -19,6 +19,9 @@ $(VENV)/bin/activate: requirements.txt
 
 run: install
 	. $(VENV)/bin/activate; $(PYTHON) main.py
+
+web: install
+	. $(VENV)/bin/activate; $(PYTHON) tools/build_web.py
 
 clean:
 	rm -rf $(VENV)

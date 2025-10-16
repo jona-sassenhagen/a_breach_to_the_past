@@ -13,19 +13,21 @@ class Tilemap:
         self.tiles = get_layout()
         self.tile_states = {}
 
-        # Initialize door states with correct orientation
-        for y in range(MAP_HEIGHT):
-            for x in range(MAP_WIDTH):
-                # Check if this is a door location based on map_layout's logic
-                is_door_location = False
-                if (y == 0 or y == MAP_HEIGHT - 1) and x == MAP_WIDTH // 2: is_door_location = True # Top/Bottom door
-                if (x == 0 or x == MAP_WIDTH - 1) and y == MAP_HEIGHT // 2: is_door_location = True # Left/Right door
+        # Initialize door states: two at top row, two at bottom row; none at left/right
+        self.top_door_xs = [MAP_WIDTH // 3, MAP_WIDTH - 1 - MAP_WIDTH // 3]
+        self.bottom_door_xs = list(self.top_door_xs)
+        for x in self.top_door_xs:
+            self.tile_states[(x, 0)] = {'state': 'closed', 'orientation': 'horizontal'}
+        for x in self.bottom_door_xs:
+            self.tile_states[(x, MAP_HEIGHT - 1)] = {'state': 'closed', 'orientation': 'horizontal'}
 
-                if is_door_location:
-                    if y == 0 or y == MAP_HEIGHT - 1: # Top or bottom wall
-                        self.tile_states[(x,y)] = {'state': 'closed', 'orientation': 'horizontal'}
-                    elif x == 0 or x == MAP_WIDTH - 1: # Left or right wall
-                        self.tile_states[(x,y)] = {'state': 'closed', 'orientation': 'vertical'}
+    def is_open_door(self, x: int, y: int) -> bool:
+        info = self.tile_states.get((x, y))
+        return bool(info and info.get('state') == 'open')
+
+    def is_closed_horizontal_door(self, x: int, y: int) -> bool:
+        info = self.tile_states.get((x, y))
+        return bool(info and info.get('state') == 'closed' and info.get('orientation') == 'horizontal')
 
     def draw(self):
         for y in range(MAP_HEIGHT):

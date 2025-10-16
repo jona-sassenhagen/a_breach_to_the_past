@@ -2,8 +2,8 @@ import pyxel
 import time
 import math
 from enum import Enum
-from map import PIT, WALL
-from entity import SlimeProjectile, Decor
+from map import PIT, WALL, Tilemap
+from entity import SlimeProjectile, Decor, Treasure, DumbSlime, Spider, Spinner
 import random
 import ai
 from vfx import VfxManager
@@ -61,6 +61,11 @@ class CombatManager:
         self.move_arrow = None  # dict with {'start': (x,y), 'end': (x,y)}
         self.move_arrow_ticks = 0
 
+        # Floor treasure pickups
+        self.treasure_objects = []
+        self.treasure_pending = []  # list of dicts: {'x':x,'y':y,'t':ticks}
+        self.treasure_spawn_delay = 5  # frames until treasure appears (half of particle life)
+
         self._next_phase = {
             GamePhase.ENEMY_MOVE_TELEGRAPH: GamePhase.PLAYER_ACTION,
             GamePhase.PLAYER_ACTION: GamePhase.ENEMY_ATTACK,
@@ -98,6 +103,20 @@ class CombatManager:
         self.player.update_animation()
 
         self.vfx_manager.update()
+
+        # Update delayed treasure spawns to appear mid-splatter
+        if self.treasure_pending:
+            keep_pending = []
+            for e in self.treasure_pending:
+                e['t'] -= 1
+                if e['t'] <= 0:
+                    self._spawn_treasure(e['x'], e['y'])
+                else:
+                    keep_pending.append(e)
+            self.treasure_pending = keep_pending
+
+        # Always allow passive pickup when standing on treasure
+        self._pickup_treasure_under_player()
 
         # Decay one-frame (or few-frames) attack overlay
         if self.attack_render_ticks > 0:
@@ -156,6 +175,8 @@ class CombatManager:
                 # Compute attack order numbers based on initiative and who telegraphed
                 self._compute_attack_order_map()
                 self.phase_complete = True
+        # Allow passive pickup if standing on treasure
+        self._pickup_treasure_under_player()
 
     def handle_player_action_phase(self):
         if self.phase_started:
@@ -163,7 +184,21 @@ class CombatManager:
             self.phase_started = False
 
         all_entities = [self.player] + self.enemies + self.decor_objects # Create all_entities list
+        prev_x, prev_y = self.player.x, self.player.y
         self.player.update(all_entities)
+        moved = (self.player.x != prev_x or self.player.y != prev_y)
+        # Trigger room change only when pressing INTO the door while already adjacent (no movement this frame)
+        if not moved:
+            # Top doors: player stands at y==1 and presses up into the top wall
+            if self.player.y == 1 and self.player.x in getattr(self.tilemap, 'top_door_xs', []):
+                if pyxel.btnp(pyxel.KEY_W):
+                    self._generate_room('top', self.player.x)
+                    return
+            # Bottom doors: player stands at y==MAP_HEIGHT-2 and presses down into the bottom wall
+            if self.player.y == MAP_HEIGHT - 2 and self.player.x in getattr(self.tilemap, 'bottom_door_xs', []):
+                if pyxel.btnp(pyxel.KEY_S):
+                    self._generate_room('bottom', self.player.x)
+                    return
         # End player phase on spacebar or when out of moves
         if pyxel.btnp(pyxel.KEY_SPACE) or getattr(self.player, 'moves_left', 0) <= 0:
             self.phase_complete = True
@@ -194,74 +229,27 @@ class CombatManager:
         hate_adjustments = []  # tuples of (attacker, victim, dmg)
         vfx_positions = []
         decor_vfx_positions = []
+        decor_break_events = []
         max_lunge_hold = 0
 
-        # Resolve all projectiles immediately by computing their first impact; tally damage; also tally self-damage
-        self_damage = {}  # attacker -> damage to self (e.g., slime recoil)
+        # Spawn real projectiles; defer damage until projectile impact
         for t in projectile_teles:
             attacker = t.get('attacker')
-            # Self-damage for ranged attackers if applicable (e.g., slime)
-            if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
-                self_damage[attacker] = self_damage.get(attacker, 0) + 1
-
             # Determine the projectile path
             if t.get('type') == 'bouncing':
                 path = t['path']
             else:  # 'ranged' single-step
                 path = [t['pos']]
-
-            # Simulate first impact along the path and capture cosmetic path
-            hit_applied = False
-            cosmetic_end_index = -1
-            impact_on_decor = False
-            for (tile_x, tile_y) in path:
-                cosmetic_end_index += 1
-                # Bounds and hard obstruction
-                if not (0 <= tile_x < MAP_WIDTH and 0 <= tile_y < MAP_HEIGHT):
-                    hit_applied = True
-                    break
-                tile = self.tilemap.tiles[tile_y][tile_x]
-                if tile == PIT or tile == WALL:
-                    hit_applied = True
-                    break
-
-                # Check player first
-                if self.player.occupies(tile_x, tile_y):
-                    total_player_dmg += 1
-                    hate_adjustments.append((attacker, self.player, 1))
-                    hit_applied = True
-                    break
-
-                # Check enemies
-                for enemy in self.enemies:
-                    if enemy.occupies(tile_x, tile_y):
-                        enemy_dmg[enemy] = enemy_dmg.get(enemy, 0) + 1
-                        hate_adjustments.append((attacker, enemy, 1))
-                        hit_applied = True
-                        break
-                if hit_applied:
-                    break
-
-                # Check decor (intact only)
-                for deco in self.decor_objects:
-                    if not deco.is_rubble and deco.occupies(tile_x, tile_y):
-                        # Decor will break to rubble
-                        # Tally decor breaks separately (converted to rubble after all tallies)
-                        enemy_dmg[deco] = enemy_dmg.get(deco, 0) + 1  # reuse map; special-case when applying
-                        impact_on_decor = True
-                        hit_applied = True
-                        break
-                if hit_applied:
-                    break
-
-            # Spawn a cosmetic projectile to visualize travel up to the impact (or full path if no impact)
-            cosmetic_path = path if not hit_applied else path[:cosmetic_end_index+1]
-            if cosmetic_path:
-                start_pos = t['start']
-                proj = SlimeProjectile(start_pos[0], start_pos[1], cosmetic_path, self.tilemap, self.player.asset_manager, owner=attacker, cosmetic=True)
-                # Mark whether this cosmetic projectile ended on decor
-                setattr(proj, 'impact_on_decor', impact_on_decor)
-                self.projectiles.append(proj)
+            start_pos = t['start']
+            projectile = SlimeProjectile(start_pos[0], start_pos[1], path, self.tilemap, self.player.asset_manager, owner=attacker)
+            self.projectiles.append(projectile)
+            # Apply shooter self-damage at fire time (e.g., slime recoil)
+            if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
+                attacker.hp -= 1
+                if attacker.hp <= 0 and attacker in self.enemies:
+                    ax, ay = attacker.x, attacker.y
+                    self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
+                    self.enemies.remove(attacker)
 
         # Compute melee hits simultaneously against snapshot of positions
         for t in melee_teles:
@@ -288,33 +276,42 @@ class CombatManager:
                         dx = 0
                 target_pos = (attacker.x + dx, attacker.y + dy) if attacker is not None else target_pos
 
-            # If no valid target position determined, skip
-            if target_pos is None:
-                continue
+            affected_tiles = []
+            if t.get('type') == 'plus':
+                affected_tiles = list(t.get('tiles', []))
+            else:
+                # Single target position
+                if target_pos is None:
+                    continue
+                affected_tiles = [target_pos]
 
-            # Player hit check
-            if self.player.occupies(target_pos[0], target_pos[1]):
-                total_player_dmg += 1
-                hate_adjustments.append((attacker, self.player, 1))
-                vfx_positions.append((target_pos[0], target_pos[1]))
+            for (ax, ay) in affected_tiles:
+                # Player hit check
+                if self.player.occupies(ax, ay):
+                    total_player_dmg += 1
+                    hate_adjustments.append((attacker, self.player, 1))
+                    vfx_positions.append((ax, ay))
 
-            # Enemy hit checks (do not remove yet; apply after tally)
-            for enemy in self.enemies:
-                if enemy.occupies(target_pos[0], target_pos[1]):
-                    enemy_dmg[enemy] = enemy_dmg.get(enemy, 0) + 1
-                    hate_adjustments.append((attacker, enemy, 1))
-                    vfx_positions.append((target_pos[0], target_pos[1]))
+                # Enemy hit checks
+                for enemy in self.enemies:
+                    if enemy.occupies(ax, ay):
+                        enemy_dmg[enemy] = enemy_dmg.get(enemy, 0) + 1
+                        hate_adjustments.append((attacker, enemy, 1))
+                        vfx_positions.append((ax, ay))
 
-            # Decor hit checks (convert to rubble after tally)
-            for deco in self.decor_objects:
-                if not deco.is_rubble and deco.occupies(target_pos[0], target_pos[1]):
-                    enemy_dmg[deco] = enemy_dmg.get(deco, 0) + 1
-                    # Melee breaking decor: grey splatter only
-                    decor_vfx_positions.append((target_pos[0], target_pos[1]))
+                # Decor hit checks
+                for deco in self.decor_objects:
+                    if not deco.is_rubble and deco.occupies(ax, ay):
+                        enemy_dmg[deco] = enemy_dmg.get(deco, 0) + 1
+                        decor_vfx_positions.append((ax, ay))
+                        decor_break_events.append({'pos': (ax, ay), 'attacker': attacker, 'steps': 0})
 
-            # Trigger lunge animation for melee attackers
-            if attacker is not None and hasattr(attacker, 'trigger_lunge'):
-                attacker.trigger_lunge(target_pos)
+            # Trigger lunge/attack animation for melee attackers
+            if attacker is not None:
+                if hasattr(attacker, 'trigger_lunge') and target_pos is not None:
+                    attacker.trigger_lunge(target_pos)
+                if hasattr(attacker, 'trigger_attack_anim'):
+                    attacker.trigger_attack_anim()
                 try:
                     hold = (
                         getattr(attacker, '_lunge_forward', 0)
@@ -326,6 +323,7 @@ class CombatManager:
                 max_lunge_hold = max(max_lunge_hold, hold + 2)
 
         # Apply all tallied damage and effects (simultaneous)
+        killed_positions = []
         if total_player_dmg > 0:
             self.player.take_damage(total_player_dmg)
             if self.player.hp <= 0:
@@ -337,14 +335,10 @@ class CombatManager:
                 # Convert to rubble if hit
                 victim.break_to_rubble()
             else:
+                pre_hp = getattr(victim, 'hp', 0)
                 victim.take_damage(dmg)
-
-        # Apply any tallied self-damage (e.g., slimes)
-        for attacker, dmg in self_damage.items():
-            attacker.hp -= dmg
-            if attacker.hp <= 0:
-                ax, ay = attacker.x, attacker.y
-                self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
+                if pre_hp > 0 and getattr(victim, 'hp', 0) <= 0:
+                    killed_positions.append((victim.x, victim.y))
 
         # Hate adjustments after damage tally
         for attacker, victim, dmg in hate_adjustments:
@@ -362,18 +356,28 @@ class CombatManager:
         if self.enemies:
             self.enemies = [e for e in self.enemies if e.hp > 0]
 
+        # Spawn treasure for melee decor breaks
+        for ev in decor_break_events:
+            pos = ev.get('pos')
+            if pos:
+                self._queue_treasure(pos[0], pos[1])
+
+        # Spawn treasure immediately for melee kills; projectile kills are handled on impact in update_projectiles
+        for (tx, ty) in set(killed_positions):
+            self._queue_treasure(tx, ty)
+
         # Set lunge lock for readability (does not block projectile resolution)
         if max_lunge_hold > 0:
             self.anim_lock_ticks = max(self.anim_lock_ticks, max_lunge_hold)
 
-        # Take a snapshot for rendering the simultaneous attack burst
-        self.attack_renders = telegraphs
+        # Take a snapshot for rendering the simultaneous attack burst (melee only)
+        self.attack_renders = melee_teles
         self.attack_render_ticks = 1  # render for this frame only (can be tuned)
 
         # Clear telegraphs now that attacks have resolved
         self.telegraphs = []
 
-        # No need to go to projectile resolution for these attacks; proceed per default flow
+        # Projectiles will resolve in the next phase
         self.phase_complete = True
 
     def _spawn_random_decor(self):
@@ -420,6 +424,72 @@ class CombatManager:
             else:
                 keep.append(d)
         self.decor_objects = keep
+
+    def _generate_room(self, entry_from: str, entry_x: int):
+        # Regenerate tilemap
+        self.tilemap = Tilemap(self.player.asset_manager)
+        # Rebind tilemap on player and existing enemies
+        self.player.tilemap = self.tilemap
+        for e in self.enemies:
+            e.tilemap = self.tilemap
+        # Clear state
+        self.telegraphs = []
+        self.projectiles = []
+        self.vfx_manager.particles = []
+        self.decor_objects = []
+        self.treasure_objects = []
+        self.treasure_pending = []
+        self.enemy_action_queue = []
+        self.attack_queue = []
+        self.attack_renders = []
+        self.attack_render_ticks = 0
+        self.move_arrow = None
+        self.move_arrow_ticks = 0
+        self.action_timer = 0
+        # Position player at opposite side corresponding to entry
+        if entry_from == 'top':
+            self.player.y = MAP_HEIGHT - 2
+            self.player.x = max(1, min(MAP_WIDTH - 2, entry_x))
+        elif entry_from == 'bottom':
+            self.player.y = 1
+            self.player.x = max(1, min(MAP_WIDTH - 2, entry_x))
+        # Spawn decor immediately
+        self._spawn_random_decor()
+        self._decor_initialized = True
+        # Spawn enemies (2-3 random)
+        self.enemies = []
+        enemy_classes = []
+        try:
+            enemy_classes = [DumbSlime, Spider, Spinner]
+        except Exception:
+            # Fallback in case some classes are unavailable
+            from entity import DumbSlime as _DS, Spider as _Sp
+            enemy_classes = [_DS, _Sp]
+        num = random.randint(2, 3)
+        candidates = []
+        for y in range(MAP_HEIGHT):
+            for x in range(MAP_WIDTH):
+                tile = self.tilemap.tiles[y][x]
+                if tile and tile.startswith('floor') and not self.tilemap.is_open_door(x, y):
+                    if not self.player.occupies(x, y):
+                        candidates.append((x, y))
+        random.shuffle(candidates)
+        for i in range(min(num, len(candidates))):
+            x, y = candidates[i]
+            cls = random.choice(enemy_classes)
+            self.enemies.append(cls(x, y, self.tilemap, self.player.asset_manager))
+        # Reset enemy initiative to the new enemies
+        self.enemy_initiative = list(self.enemies)
+        # Occasionally free treasure (0-2)
+        free = random.randint(0, 2)
+        random.shuffle(candidates)
+        for i in range(min(free, len(candidates))):
+            x, y = candidates[i]
+            self._queue_treasure(x, y, delay=0)
+        # Reset phase to enemy telegraph of new room
+        self.current_phase = GamePhase.ENEMY_MOVE_TELEGRAPH
+        self.phase_started = True
+        self.phase_complete = False
 
     def handle_projectile_resolution_phase(self):
         self.update_projectiles()
@@ -609,11 +679,14 @@ class CombatManager:
                     if enemy.occupies(tile_x, tile_y):
                         if not getattr(p, 'cosmetic', False):
                             dmg = 1
+                            pre_hp = enemy.hp
                             enemy.take_damage(dmg)
                             if getattr(p, 'owner', None) is not None:
                                 ai.adjust_hate_on_hit(p.owner, enemy, dmg, self.player)
                             self.vfx_manager.add_particles(p.x + TILE_SIZE / 2, p.y + TILE_SIZE / 2, 8, 20)
                             p.path = p.path[:p.segment+1]
+                            if pre_hp > 0 and enemy.hp <= 0:
+                                self._queue_treasure(enemy.x, enemy.y)
                 # Decor breaks to rubble on projectile hit
                 for deco in self.decor_objects:
                     if not deco.is_rubble and deco.occupies(tile_x, tile_y):
@@ -625,6 +698,12 @@ class CombatManager:
                             if getattr(p, 'owner', None) is not None and hasattr(p.owner, 'anim_name') and 'slime' in getattr(p.owner, 'anim_name', ''):
                                 self.vfx_manager.add_particles(p.x + TILE_SIZE / 2, p.y + TILE_SIZE / 2, 8, 12)
                             p.path = p.path[:p.segment+1]
+                            # treasure scheduling handled in attack phase via decor_break_events
+                            # Queue treasure unless the owner slime is dead (self-damage on shot)
+                            if not (getattr(p, 'owner', None) is not None and getattr(p.owner, 'hp', 0) <= 0 and 'slime' in getattr(p.owner, 'anim_name', '')):
+                                self._queue_treasure(tile_x, tile_y)
+                            # Queue treasure to appear after splatter for decor destruction
+                            self._queue_treasure(tile_x, tile_y)
         # Immediately prune dead enemies so they "die now" (with VFX already spawned)
         if self.enemies:
             self.enemies = [e for e in self.enemies if e.hp > 0]
@@ -639,6 +718,49 @@ class CombatManager:
     def draw_decor(self):
         for d in self.decor_objects:
             d.draw()
+
+    def draw_treasure(self):
+        for t in self.treasure_objects:
+            t.draw()
+
+    def _spawn_treasure(self, x: int, y: int):
+        # Avoid duplicates on the same tile
+        for t in self.treasure_objects:
+            if t.x == x and t.y == y:
+                return
+        # Only on walkable floor
+        if not (0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT):
+            return
+        tile = self.tilemap.tiles[y][x]
+        if tile == WALL or tile == PIT:
+            return
+        name_list = getattr(self.player.asset_manager, 'treasure_names', [])
+        if not name_list:
+            return
+        sprite = random.choice(name_list)
+        self.treasure_objects.append(Treasure(x, y, self.tilemap, self.player.asset_manager, sprite_name=sprite))
+
+    def _queue_treasure(self, x: int, y: int, delay: int | None = None):
+        # Avoid duplicate queued spawns for the same tile at the same moment
+        for e in self.treasure_pending:
+            if e['x'] == x and e['y'] == y:
+                return
+        t = self.treasure_spawn_delay if delay is None else delay
+        self.treasure_pending.append({'x': x, 'y': y, 't': t})
+
+    def _pickup_treasure_under_player(self):
+        keep = []
+        picked = 0
+        for t in self.treasure_objects:
+            if self.player.occupies(t.x, t.y):
+                picked += 1
+            else:
+                keep.append(t)
+        if picked > 0:
+            self.treasure_objects = keep
+            # Increment player's coin count
+            coins = getattr(self.player, 'coins', 0)
+            setattr(self.player, 'coins', coins + picked)
 
 
     def telegraph_enemy_attacks(self):
@@ -686,6 +808,16 @@ class CombatManager:
                 ey = (start_pos[1] + dy) * TILE_SIZE + TILE_SIZE // 2
                 pyxel.line(sx, sy, ex, ey, 8)
                 pyxel.circ(ex, ey, 2, 8)
+            elif telegraph.get('type') == 'plus':
+                start_pos = telegraph['start']
+                sx = start_pos[0] * TILE_SIZE + TILE_SIZE // 2
+                sy = start_pos[1] * TILE_SIZE + TILE_SIZE // 2
+                tiles = telegraph.get('tiles', [])
+                for (tx, ty) in tiles:
+                    ex = tx * TILE_SIZE + TILE_SIZE // 2
+                    ey = ty * TILE_SIZE + TILE_SIZE // 2
+                    pyxel.line(sx, sy, ex, ey, 8)
+                    pyxel.circ(ex, ey, 2, 8)
             else:
                 start_pos = telegraph['start']
                 end_pos = telegraph['pos']
@@ -737,6 +869,16 @@ class CombatManager:
                 ey = (start_pos[1] + dy) * TILE_SIZE + TILE_SIZE // 2
                 pyxel.line(sx, sy, ex, ey, 7)
                 pyxel.circ(ex, ey, 2, 7)
+            elif telegraph.get('type') == 'plus':
+                start_pos = telegraph['start']
+                sx = start_pos[0] * TILE_SIZE + TILE_SIZE // 2
+                sy = start_pos[1] * TILE_SIZE + TILE_SIZE // 2
+                tiles = telegraph.get('tiles', [])
+                for (tx, ty) in tiles:
+                    ex = tx * TILE_SIZE + TILE_SIZE // 2
+                    ey = ty * TILE_SIZE + TILE_SIZE // 2
+                    pyxel.line(sx, sy, ex, ey, 7)
+                    pyxel.circ(ex, ey, 2, 7)
             else:
                 start_pos = telegraph['start']
                 end_pos = telegraph['pos']

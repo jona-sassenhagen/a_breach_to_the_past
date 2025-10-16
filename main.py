@@ -3,7 +3,7 @@ import pyxel
 import time
 from asset_manager import AssetManager
 from map import Tilemap
-from entity import Player, DumbSlime, Spider
+from entity import Player, DumbSlime, Spider, Spinner
 from combat import CombatManager
 from constants import TILE_SIZE
 
@@ -15,7 +15,8 @@ class App:
         self.player = Player(4, 4, self.tilemap, self.asset_manager)
         self.enemies = [
             DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
-            Spider(6, 2, self.tilemap, self.asset_manager)
+            Spider(6, 2, self.tilemap, self.asset_manager),
+            Spinner(3, 6, self.tilemap, self.asset_manager)
         ]
         self.combat_manager = CombatManager(self.player, self.enemies, self.tilemap)
         pyxel.run(self.update, self.draw)
@@ -32,10 +33,12 @@ class App:
         pyxel.cls(0)
         self.tilemap.draw()
         self.combat_manager.draw_decor()
+        self.combat_manager.draw_treasure()
+        # Draw telegraphs beneath entities so sprites appear on top
+        self.combat_manager.draw_telegraphs()
         self.player.draw()
         for enemy in self.enemies:
             enemy.draw()
-        self.combat_manager.draw_telegraphs()
         self.combat_manager.draw_attack_renders()
         self.combat_manager.draw_move_arrow()
         self.combat_manager.draw_projectiles()
@@ -52,6 +55,13 @@ class App:
 
         for enemy in self.enemies:
             self.draw_hp_bar(enemy.x, enemy.y, enemy.hp)
+
+        # Coin counter top-left with drop shadow
+        coins = getattr(self.player, 'coins', 0)
+        shadow_x, shadow_y = 3, 3
+        text_x, text_y = 2, 2
+        pyxel.text(shadow_x, shadow_y, f"Coins: {coins}", 0)  # shadow (black)
+        pyxel.text(text_x, text_y, f"Coins: {coins}", 7)      # main text (white)
 
     def draw_hp_bar(self, unit_x, unit_y, hp):
         for i in range(hp):

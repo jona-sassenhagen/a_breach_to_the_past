@@ -1,0 +1,21 @@
+# Python build artifacts
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+
+# Local configuration
+.env
+.DS_Store
+
+# Pyxel web build output
+build/
+*.pyxapp
+
+AGENTS.md
+*.md
+
+*.sh
+
+sprite_assets/skeleton*
