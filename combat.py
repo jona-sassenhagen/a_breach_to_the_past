@@ -21,6 +21,39 @@ class _SimEntity:
     def occupies(self, x, y):
         return self.x <= x < self.x + self.width and self.y <= y < self.y + self.height
 
+    def can_occupy(self, new_x, new_y, all_entities):
+        for i in range(self.width):
+            for j in range(self.height):
+                tx = new_x + i
+                ty = new_y + j
+                if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
+                    return False
+                tile = self.tilemap.tiles[ty][tx]
+                if tile == PIT:
+                    return False
+                if tile == WALL:
+                    door_info = self.tilemap.tile_states.get((tx, ty))
+                    if not (door_info and door_info.get('state') == 'open'):
+                        return False
+                door_info = self.tilemap.tile_states.get((tx, ty))
+                if door_info and door_info.get('state') == 'closed':
+                    return False
+                for entity in all_entities:
+                    if entity is self:
+                        continue
+                    if hasattr(entity, 'occupies') and entity.occupies(tx, ty):
+                        return False
+        return True
+
+    def move(self, dx, dy, all_entities):
+        new_x = self.x + dx
+        new_y = self.y + dy
+        if not self.can_occupy(new_x, new_y, all_entities):
+            return False
+        self.x = new_x
+        self.y = new_y
+        return True
+
 
 class _SimPlayer(_SimEntity):
     def __init__(self, player, tile):
@@ -252,6 +285,11 @@ class CombatManager:
         clicked_tile = None
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
             clicked_tile = self._mouse_tile()
+            if clicked_tile == (self.player.x, self.player.y):
+                self.phase_complete = True
+                self.post_player_delay = self.post_player_delay_frames
+                self._reset_hover_preview()
+                return
             if clicked_tile and clicked_tile in self.player_reachable_tiles:
                 steps = self.player_reachable_tiles[clicked_tile]
                 if steps > 0:
@@ -1035,13 +1073,11 @@ class CombatManager:
         for enemy in ordered:
             sim_enemy = sim_map[enemy]
             target = sim_enemy.current_target or sim_player
-            path = ai.find_closest_attack_position(sim_enemy, target, sim_all_entities)
-            if not path or len(path) <= 1:
-                continue
-            steps = min(sim_enemy.move_speed, len(path) - 1)
-            end = path[steps]
-            predictions.append({'start': (sim_enemy.x, sim_enemy.y), 'end': end})
-            sim_enemy.x, sim_enemy.y = end
+            start_pos = (sim_enemy.x, sim_enemy.y)
+            ai.move_towards_target(sim_enemy, target, sim_all_entities)
+            end_pos = (sim_enemy.x, sim_enemy.y)
+            if end_pos != start_pos:
+                predictions.append({'start': start_pos, 'end': end_pos})
 
         return predictions
 
