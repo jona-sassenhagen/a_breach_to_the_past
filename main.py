@@ -12,21 +12,21 @@ class App:
         pyxel.init(160, 160, title="Legends of the Breach")
         pyxel.mouse(True)
         self.asset_manager = AssetManager()
-        self.tilemap = Tilemap(self.asset_manager)
-        start_x = getattr(self.tilemap, 'top_door_xs', [1])[0]
-        self.player = Player(start_x, 1, self.tilemap, self.asset_manager)
-        self.enemies = [
-            DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
-            Spider(6, 2, self.tilemap, self.asset_manager),
-            Spinner(3, 6, self.tilemap, self.asset_manager)
-        ]
-        self.combat_manager = CombatManager(self.player, self.enemies, self.tilemap)
+        self.tilemap = None
+        self.player = None
+        self.enemies = []
+        self.combat_manager = None
+        self.reset_world()
         pyxel.run(self.update, self.draw)
 
     def update(self):
         if pyxel.btnp(pyxel.KEY_Q):
             pyxel.quit()
-        
+        if self.combat_manager and self.combat_manager.player_dead:
+            if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) or pyxel.btnp(pyxel.KEY_SPACE):
+                self.reset_world()
+            return
+
         self.combat_manager.update()
         self.enemies = self.combat_manager.enemies
         time.sleep(0.05)
@@ -50,6 +50,20 @@ class App:
         self.combat_manager.draw_attack_order()
         self.draw_ui()
         self.combat_manager.draw_room_transition_overlay()
+        if self.combat_manager.player_dead:
+            self.draw_death_screen()
+
+    def reset_world(self):
+        self.tilemap = Tilemap(self.asset_manager)
+        start_x = getattr(self.tilemap, 'top_door_xs', [1])[0]
+        self.player = Player(start_x, 1, self.tilemap, self.asset_manager)
+        enemies = [
+            DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
+            Spider(6, 2, self.tilemap, self.asset_manager),
+            Spinner(3, 6, self.tilemap, self.asset_manager)
+        ]
+        self.enemies = enemies
+        self.combat_manager = CombatManager(self.player, self.enemies, self.tilemap)
 
     def draw_ui(self):
         phase_text = str(self.combat_manager.current_phase.name).replace('_', ' ').title()
@@ -66,6 +80,11 @@ class App:
         text_x, text_y = 2, 2
         pyxel.text(shadow_x, shadow_y, f"Coins: {coins}", 0)  # shadow (black)
         pyxel.text(text_x, text_y, f"Coins: {coins}", 7)      # main text (white)
+
+    def draw_death_screen(self):
+        pyxel.rect(0, 0, 160, 160, 0)
+        pyxel.text(20, 70, "You died a gruseome death", 7)
+        pyxel.text(38, 90, "Click to play again", 7)
 
     def draw_hp_bar(self, unit_x, unit_y, hp):
         for i in range(hp):

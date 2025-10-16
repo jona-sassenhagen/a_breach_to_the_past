@@ -35,6 +35,7 @@ class CombatManager:
         self.player_reach_origin = (player.x, player.y)
         self._shade_offsets = [(ox, oy) for ox in range(TILE_SIZE) for oy in range(TILE_SIZE) if (ox + oy) % 4 == 0]
         self.room_transition = None
+        self.player_dead = False
         self._transition_frames = 10
         self._screen_px_w = MAP_WIDTH * TILE_SIZE
         self._screen_px_h = MAP_HEIGHT * TILE_SIZE
@@ -82,6 +83,8 @@ class CombatManager:
         }
 
     def update(self):
+        if self.player_dead:
+            return
         if self.room_transition:
             self._update_room_transition()
             return
@@ -202,6 +205,7 @@ class CombatManager:
         self._refresh_player_reachability(all_entities)
 
         moved = False
+        mouse_move = False
         clicked_tile = None
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
             clicked_tile = self._mouse_tile()
@@ -214,6 +218,7 @@ class CombatManager:
                         moved = self.player.follow_path(path, all_entities)
                         if moved:
                             self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
+                            mouse_move = True
             if not moved and clicked_tile and self._handle_door_click(clicked_tile, all_entities):
                 return
 
@@ -226,6 +231,9 @@ class CombatManager:
         if moved:
             all_entities = [self.player] + self.enemies + self.decor_objects
             self._refresh_player_reachability(all_entities)
+            if mouse_move:
+                self.phase_complete = True
+                return
 
         if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) or getattr(self.player, 'moves_left', 0) <= 0:
             self.phase_complete = True
@@ -354,8 +362,9 @@ class CombatManager:
         if total_player_dmg > 0:
             self.player.take_damage(total_player_dmg)
             if self.player.hp <= 0:
-                print("Game Over!")
-                pyxel.quit()
+                self.player.hp = 0
+                self._on_player_death()
+                return
 
         for victim, dmg in enemy_dmg.items():
             if isinstance(victim, Decor):
@@ -568,8 +577,9 @@ class CombatManager:
                     ai.adjust_hate_on_hit(attacker, self.player, dmg, self.player)
                 self.vfx_manager.add_particles(target_pos[0] * TILE_SIZE + TILE_SIZE / 2, target_pos[1] * TILE_SIZE + TILE_SIZE / 2, 8, 10)
                 if self.player.hp <= 0:
-                    print("Game Over!")
-                    pyxel.quit()
+                    self.player.hp = 0
+                    self._on_player_death()
+                    return
 
             # Check if any enemy is at the target position
             for enemy in list(self.enemies):
@@ -640,8 +650,9 @@ class CombatManager:
                     self.player.take_damage(1)
                     self.vfx_manager.add_particles(target_pos[0] * TILE_SIZE + TILE_SIZE / 2, target_pos[1] * TILE_SIZE + TILE_SIZE / 2, 8, 10)
                     if self.player.hp <= 0:
-                        print("Game Over!")
-                        pyxel.quit()
+                        self.player.hp = 0
+                        self._on_player_death()
+                        return
 
                 # Check if any enemy is at the target position
                 for enemy in self.enemies:
@@ -656,6 +667,9 @@ class CombatManager:
         self.telegraphs = []
 
     def update_projectiles(self):
+        if self.player_dead:
+            return
+
         for p in self.projectiles:
             p.update()
             if p.segment >= len(p.path):
@@ -700,8 +714,9 @@ class CombatManager:
                     self.vfx_manager.add_particles(p.x + TILE_SIZE / 2, p.y + TILE_SIZE / 2, 8, 20)
                     p.path = p.path[:p.segment+1]
                     if self.player.hp <= 0:
-                        print("Game Over!")
-                        pyxel.quit()
+                        self.player.hp = 0
+                        self._on_player_death()
+                        return
                 for enemy in self.enemies:
                     if enemy.occupies(tile_x, tile_y):
                         if not getattr(p, 'cosmetic', False):
@@ -743,6 +758,8 @@ class CombatManager:
             p.draw()
 
     def draw_player_reachability_overlay(self):
+        if self.player_dead:
+            return
         if self.current_phase != GamePhase.PLAYER_ACTION:
             return
         if not self.player_reachable_tiles:
@@ -766,6 +783,8 @@ class CombatManager:
                         pyxel.pset(base_x + ox, base_y + oy, color)
 
     def draw_room_transition_overlay(self):
+        if self.player_dead:
+            return
         if not self.room_transition:
             return
         rt = self.room_transition
@@ -899,6 +918,19 @@ class CombatManager:
         elif rt['state'] == 'fade_in':
             if rt['timer'] >= self._transition_frames:
                 self.room_transition = None
+
+    def _on_player_death(self):
+        if self.player_dead:
+            return
+        self.player_dead = True
+        self.room_transition = None
+        self.move_arrow = None
+        self.move_arrow_ticks = 0
+        self.attack_renders = []
+        self.projectiles = []
+        self.telegraphs = []
+        self.enemy_action_queue = []
+        self.attack_queue = []
 
     def _handle_door_click(self, tile, all_entities):
         x, y = tile
