@@ -107,6 +107,7 @@ class CombatManager:
         self.hover_delay_frames = 10
         self.post_player_delay_frames = 12
         self.post_player_delay = 0
+        self.locked_enemy_plan: list[dict] = []
 
         # Deterministic initiative order and attack order visualization
         self.enemy_initiative = list(enemies)
@@ -231,14 +232,18 @@ class CombatManager:
                 self._decor_initialized = True
             # At round start, decay rubble one step (remove those expired)
             self._decay_rubble_once()
+            if not self.locked_enemy_plan:
+                self.locked_enemy_plan = self._compute_enemy_plan((self.player.x, self.player.y), apply=True)
+            plan = []
+            for entry in self.locked_enemy_plan:
+                enemy = entry['enemy']
+                if enemy in self.enemies and enemy.hp > 0:
+                    plan.append(entry)
+            self.locked_enemy_plan = plan
             self.enemy_action_queue = []
-            # Begin turn: update hate maps and choose targets in static initiative order
-            ordered = [e for e in self.enemy_initiative if e in self.enemies]
-            for enemy in ordered:
-                enemy.begin_turn(self.player, self.enemies, self.enemy_initiative)
-            for enemy in ordered:
-                self.enemy_action_queue.append({'action': 'move', 'enemy': enemy})
-                self.enemy_action_queue.append({'action': 'telegraph', 'enemy': enemy})
+            for entry in plan:
+                self.enemy_action_queue.append({'action': 'move', 'enemy': entry['enemy'], 'path': entry['path']})
+                self.enemy_action_queue.append({'action': 'telegraph', 'enemy': entry['enemy'], 'target': entry['target']})
             self.phase_started = False
 
         self.action_timer += 1
@@ -246,83 +251,74 @@ class CombatManager:
             self.action_timer = 0
             if self.enemy_action_queue:
                 action = self.enemy_action_queue.pop(0)
-                all_entities = [self.player] + self.enemies + self.decor_objects # Create all_entities list
-                if action['action'] == 'move':
-                    # Move towards an attack position for selected target
-                    enemy = action['enemy']
+                enemy = action['enemy']
+                if enemy not in self.enemies or enemy.hp <= 0:
+                    pass
+                elif action['action'] == 'move':
+                    path = action.get('path') or []
                     old_pos = (enemy.x, enemy.y)
-                    enemy.move_towards_target(enemy.current_target, all_entities)
+                    for step in path:
+                        enemy.x, enemy.y = step
                     new_pos = (enemy.x, enemy.y)
                     if new_pos != old_pos:
-                        # Show a brief yellow arrow from old to new
                         self.move_arrow = {'start': old_pos, 'end': new_pos}
-                        # Keep it visible for just under one action delay so it disappears before next action
                         self.move_arrow_ticks = max(1, self.action_delay - 1)
                 elif action['action'] == 'telegraph':
-                    telegraph = action['enemy'].telegraph(action['enemy'].current_target, all_entities)
+                    target = action.get('target')
+                    enemy.current_target = target
+                    all_entities = [self.player] + self.enemies + self.decor_objects
+                    telegraph = enemy.telegraph(target, all_entities)
                     if telegraph:
                         if 'attacker' not in telegraph:
-                            telegraph['attacker'] = action['enemy']
+                            telegraph['attacker'] = enemy
                         self.telegraphs.append(telegraph)
             else:
                 # Compute attack order numbers based on initiative and who telegraphed
                 self._compute_attack_order_map()
                 self.phase_complete = True
+                self.locked_enemy_plan = []
         # Allow passive pickup if standing on treasure
         self._pickup_treasure_under_player()
 
     def handle_player_action_phase(self):
         if self.phase_started:
             self.player.reset_moves()
+            self.locked_enemy_plan = []
             self.phase_started = False
 
         all_entities = [self.player] + self.enemies + self.decor_objects
         self._refresh_player_reachability(all_entities)
         self._update_hover_preview()
 
-        moved = False
-        mouse_move = False
-        clicked_tile = None
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
             clicked_tile = self._mouse_tile()
             if clicked_tile == (self.player.x, self.player.y):
-                self.phase_complete = True
-                self.post_player_delay = self.post_player_delay_frames
-                self._reset_hover_preview()
+                self._finalize_player_turn()
                 return
             if clicked_tile and clicked_tile in self.player_reachable_tiles:
-                steps = self.player_reachable_tiles[clicked_tile]
-                if steps > 0:
-                    path = self._reconstruct_player_path(clicked_tile)
-                    if path:
-                        start_pos = (self.player.x, self.player.y)
-                        moved = self.player.follow_path(path, all_entities)
-                        if moved:
-                            self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
-                            mouse_move = True
-            if not moved and clicked_tile and self._handle_door_click(clicked_tile, all_entities):
+                path = self._reconstruct_player_path(clicked_tile)
+                if path:
+                    start_pos = (self.player.x, self.player.y)
+                    if self.player.follow_path(path, all_entities):
+                        steps = len(path)
+                        self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
+                        self._finalize_player_turn()
+                        return
+            if clicked_tile and self._handle_door_click(clicked_tile, all_entities):
                 self._reset_hover_preview()
                 return
 
-        if not moved:
-            moved = self.player.try_keyboard_move(all_entities)
-
-        if not moved and self._check_keyboard_room_transition():
-            self._reset_hover_preview()
-            return
-
+        moved = self.player.try_keyboard_move(all_entities)
         if moved:
             all_entities = [self.player] + self.enemies + self.decor_objects
             self._refresh_player_reachability(all_entities)
-            if mouse_move:
-                self.phase_complete = True
-                self.post_player_delay = self.post_player_delay_frames
-                self._reset_hover_preview()
-                return
+
+        if self._check_keyboard_room_transition():
+            self._reset_hover_preview()
+            return
 
         if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) or getattr(self.player, 'moves_left', 0) <= 0:
-            self.phase_complete = True
-            self.post_player_delay = self.post_player_delay_frames
+            self._finalize_player_turn()
 
     def handle_enemy_attack_phase(self):
         # Simultaneous resolution of all telegraphed attacks
@@ -1042,22 +1038,25 @@ class CombatManager:
         else:
             self.hover_predictions = []
 
-    def _compute_enemy_hover_predictions(self, target_tile):
-        if not self.enemies:
+    def _compute_enemy_plan(self, player_tile, apply: bool = False):
+        alive_enemies = [enemy for enemy in self.enemies if enemy.hp > 0]
+        if not alive_enemies:
             return []
 
-        sim_player = _SimPlayer(self.player, target_tile)
-        sim_map = {}
+        sim_player = _SimPlayer(self.player, player_tile)
+        sim_map: dict = {}
         sim_enemies = []
-        for enemy in self.enemies:
+        for enemy in alive_enemies:
             sim = _SimEnemy(enemy)
             sim_enemies.append(sim)
             sim_map[enemy] = sim
 
+        rev_map = {sim: enemy for enemy, sim in sim_map.items()}
+
         sim_ordered = []
-        ordered = [e for e in self.enemy_initiative if e in self.enemies]
+        ordered = [e for e in self.enemy_initiative if e in alive_enemies]
         if not ordered:
-            ordered = list(self.enemies)
+            ordered = list(alive_enemies)
         for enemy in ordered:
             sim_ordered.append(sim_map[enemy])
 
@@ -1069,16 +1068,65 @@ class CombatManager:
         for sim_enemy in sim_ordered:
             ai.begin_turn(sim_enemy, sim_player, sim_enemies, sim_ordered)
 
-        predictions = []
+        plan = []
         for enemy in ordered:
             sim_enemy = sim_map[enemy]
-            target = sim_enemy.current_target or sim_player
-            start_pos = (sim_enemy.x, sim_enemy.y)
-            ai.move_towards_target(sim_enemy, target, sim_all_entities)
-            end_pos = (sim_enemy.x, sim_enemy.y)
-            if end_pos != start_pos:
-                predictions.append({'start': start_pos, 'end': end_pos})
+            start_pos = (enemy.x, enemy.y)
+            target_sim = sim_enemy.current_target or sim_player
+            if target_sim is sim_player:
+                target_actual = self.player
+            else:
+                target_actual = rev_map.get(target_sim, self.player)
 
+            path = ai.find_closest_attack_position(sim_enemy, target_sim, sim_all_entities)
+            travel_steps = []
+            if path and len(path) > 1:
+                steps = min(sim_enemy.move_speed, len(path) - 1)
+                for idx in range(1, steps + 1):
+                    step = path[idx]
+                    travel_steps.append(step)
+                    sim_enemy.move(step[0] - sim_enemy.x, step[1] - sim_enemy.y, sim_all_entities)
+            final_pos = (sim_enemy.x, sim_enemy.y)
+
+            plan.append({
+                'enemy': enemy,
+                'start': start_pos,
+                'path': travel_steps,
+                'final': final_pos,
+                'target': target_actual,
+                'hate_map': dict(sim_enemy.hate_map),
+            })
+
+        if apply:
+            for entry in plan:
+                enemy = entry['enemy']
+                enemy.current_target = entry['target']
+                enemy.hate_map = dict(entry['hate_map'])
+            for enemy in self.enemies:
+                if enemy not in alive_enemies:
+                    enemy.current_target = None
+        return plan
+
+    def _lock_enemy_plan(self):
+        self.locked_enemy_plan = self._compute_enemy_plan((self.player.x, self.player.y), apply=True)
+
+    def _finalize_player_turn(self):
+        if self.phase_complete:
+            return
+        self.phase_complete = True
+        self.post_player_delay = self.post_player_delay_frames
+        self._reset_hover_preview()
+        self._lock_enemy_plan()
+
+    def _compute_enemy_hover_predictions(self, target_tile):
+        plan = self._compute_enemy_plan(target_tile, apply=False)
+        predictions = []
+        for entry in plan:
+            start = entry['start']
+            path = entry['path']
+            end = path[-1] if path else start
+            if end != start:
+                predictions.append({'start': start, 'end': end})
         return predictions
 
     def _start_room_transition(self, entry_from, door_x):
@@ -1091,6 +1139,7 @@ class CombatManager:
         self.player_reachable_tiles = {}
         self.player_reach_parents = {}
         self._reset_hover_preview()
+        self.locked_enemy_plan = []
 
     def _update_room_transition(self):
         if not self.room_transition:
@@ -1125,6 +1174,7 @@ class CombatManager:
         self.enemy_action_queue = []
         self.attack_queue = []
         self._reset_hover_preview()
+        self.locked_enemy_plan = []
 
     def _handle_door_click(self, tile, all_entities):
         x, y = tile

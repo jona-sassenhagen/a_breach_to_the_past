@@ -144,15 +144,15 @@ class App:
         lines = [
             "Collect treasure and stay alive",
             "Monsters telegraph movement and attacks",
-            "Coax foes into attacking each other &",
-            " furniture to expose more loot",
+            "Coax foes into wrecking furniture",
+            " and each other to expose loot",
             "Good luck!",
             "",
             "Click or press space to begin",
         ]
         for line in lines:
-            pyxel.text(3, text_y, line, 7)
-            text_y += 9
+            pyxel.text(4, text_y, line, 7)
+            text_y += 10
 
     def draw_death_screen(self):
         pyxel.rect(0, 0, 160, 160, 0)

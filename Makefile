@@ -1,4 +1,4 @@
-# Makefile for Legends of the Breach
+# Makefile for Dungeon Breach
 
 # Python interpreter
 PYTHON = python3

@@ -197,8 +197,6 @@ class Player(Entity):
 
     def draw(self):
         super().draw()
-        # Draw remaining moves
-        pyxel.text(self.x * TILE_SIZE, self.y * TILE_SIZE - 5, f"Moves: {self.moves_left}", 7)
 
 
 class Enemy(Entity):
