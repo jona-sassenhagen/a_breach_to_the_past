@@ -15,6 +15,7 @@ build/
 
 AGENTS.md
 *.md
+!README.md
 
 *.sh
 
