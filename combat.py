@@ -9,6 +9,35 @@ import ai
 from vfx import VfxManager
 from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT
 
+
+class _SimEntity:
+    def __init__(self, x, y, width, height, tilemap):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.tilemap = tilemap
+
+    def occupies(self, x, y):
+        return self.x <= x < self.x + self.width and self.y <= y < self.y + self.height
+
+
+class _SimPlayer(_SimEntity):
+    def __init__(self, player, tile):
+        super().__init__(tile[0], tile[1], player.width, player.height, player.tilemap)
+
+
+class _SimEnemy(_SimEntity):
+    def __init__(self, enemy):
+        super().__init__(enemy.x, enemy.y, enemy.width, enemy.height, enemy.tilemap)
+        self.move_speed = getattr(enemy, 'move_speed', 1)
+        self.hate_map = dict(getattr(enemy, 'hate_map', {}))
+        self.current_target = getattr(enemy, 'current_target', None)
+        self._source = enemy
+
+    def get_attack_positions(self, target):
+        return self._source.get_attack_positions(target)
+
 class GamePhase(Enum):
     ENEMY_MOVE_TELEGRAPH = 1
     PLAYER_ACTION = 2
@@ -39,6 +68,12 @@ class CombatManager:
         self._transition_frames = 10
         self._screen_px_w = MAP_WIDTH * TILE_SIZE
         self._screen_px_h = MAP_HEIGHT * TILE_SIZE
+        self.hover_tile = None
+        self.hover_timer = 0
+        self.hover_predictions = []
+        self.hover_delay_frames = 10
+        self.post_player_delay_frames = 12
+        self.post_player_delay = 0
 
         # Deterministic initiative order and attack order visualization
         self.enemy_initiative = list(enemies)
@@ -89,6 +124,12 @@ class CombatManager:
             self._update_room_transition()
             return
 
+        if self.phase_complete and self.current_phase == GamePhase.PLAYER_ACTION and self.post_player_delay > 0:
+            self.post_player_delay -= 1
+            if self.post_player_delay > 0:
+                return
+            self.post_player_delay = 0
+
         if self.phase_complete:
             if self.next_phase_override is not None:
                 self.current_phase = self.next_phase_override
@@ -135,6 +176,7 @@ class CombatManager:
 
         if self.current_phase != GamePhase.PLAYER_ACTION:
             self.player_reachable_tiles = {}
+            self._reset_hover_preview()
 
         # Decay one-frame (or few-frames) attack overlay
         if self.attack_render_ticks > 0:
@@ -203,6 +245,7 @@ class CombatManager:
 
         all_entities = [self.player] + self.enemies + self.decor_objects
         self._refresh_player_reachability(all_entities)
+        self._update_hover_preview()
 
         moved = False
         mouse_move = False
@@ -220,12 +263,14 @@ class CombatManager:
                             self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
                             mouse_move = True
             if not moved and clicked_tile and self._handle_door_click(clicked_tile, all_entities):
+                self._reset_hover_preview()
                 return
 
         if not moved:
             moved = self.player.try_keyboard_move(all_entities)
 
         if not moved and self._check_keyboard_room_transition():
+            self._reset_hover_preview()
             return
 
         if moved:
@@ -233,10 +278,13 @@ class CombatManager:
             self._refresh_player_reachability(all_entities)
             if mouse_move:
                 self.phase_complete = True
+                self.post_player_delay = self.post_player_delay_frames
+                self._reset_hover_preview()
                 return
 
         if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) or getattr(self.player, 'moves_left', 0) <= 0:
             self.phase_complete = True
+            self.post_player_delay = self.post_player_delay_frames
 
     def handle_enemy_attack_phase(self):
         # Simultaneous resolution of all telegraphed attacks
@@ -757,6 +805,32 @@ class CombatManager:
         for p in self.projectiles:
             p.draw()
 
+    def _draw_arrow_segment(self, start, end, color):
+        if start == end:
+            return
+        sx = start[0] * TILE_SIZE + TILE_SIZE // 2
+        sy = start[1] * TILE_SIZE + TILE_SIZE // 2
+        ex = end[0] * TILE_SIZE + TILE_SIZE // 2
+        ey = end[1] * TILE_SIZE + TILE_SIZE // 2
+        pyxel.line(sx, sy, ex, ey, color)
+        dx = ex - sx
+        dy = ey - sy
+        length = math.hypot(dx, dy) or 1.0
+        ndx = dx / length
+        ndy = dy / length
+        px = -ndy
+        py = ndx
+        head_len = 6
+        head_w = 3
+        bx = ex - int(ndx * head_len)
+        by = ey - int(ndy * head_len)
+        lx = int(bx + px * head_w)
+        ly = int(by + py * head_w)
+        rx = int(bx - px * head_w)
+        ry = int(by - py * head_w)
+        pyxel.line(ex, ey, lx, ly, color)
+        pyxel.line(ex, ey, rx, ry, color)
+
     def draw_player_reachability_overlay(self):
         if self.player_dead:
             return
@@ -806,6 +880,17 @@ class CombatManager:
             for x in range(self._screen_px_w):
                 if ((x + y) % mod) < threshold:
                     pyxel.pset(x, y, 0)
+
+    def draw_hover_predictions(self):
+        if self.player_dead or self.room_transition:
+            return
+        if not self.hover_predictions:
+            return
+        for pred in self.hover_predictions:
+            start = pred.get('start')
+            end = pred.get('end')
+            if start and end and start != end:
+                self._draw_arrow_segment(start, end, 10)
 
     def draw_decor(self):
         for d in self.decor_objects:
@@ -889,6 +974,77 @@ class CombatManager:
         self.move_arrow = {'start': start, 'end': end}
         self.move_arrow_ticks = duration
 
+    def _reset_hover_preview(self):
+        self.hover_tile = None
+        self.hover_timer = 0
+        self.hover_predictions = []
+
+    def _update_hover_preview(self):
+        if self.player_dead or self.room_transition:
+            self._reset_hover_preview()
+            return
+
+        tile = self._mouse_tile()
+        if not tile or tile == (self.player.x, self.player.y):
+            self._reset_hover_preview()
+            return
+
+        if tile != self.hover_tile:
+            self.hover_tile = tile
+            self.hover_timer = 0
+        else:
+            self.hover_timer += 1
+
+        if tile not in self.player_reachable_tiles:
+            self.hover_predictions = []
+            return
+
+        if self.hover_timer >= self.hover_delay_frames:
+            self.hover_predictions = self._compute_enemy_hover_predictions(tile)
+        else:
+            self.hover_predictions = []
+
+    def _compute_enemy_hover_predictions(self, target_tile):
+        if not self.enemies:
+            return []
+
+        sim_player = _SimPlayer(self.player, target_tile)
+        sim_map = {}
+        sim_enemies = []
+        for enemy in self.enemies:
+            sim = _SimEnemy(enemy)
+            sim_enemies.append(sim)
+            sim_map[enemy] = sim
+
+        sim_ordered = []
+        ordered = [e for e in self.enemy_initiative if e in self.enemies]
+        if not ordered:
+            ordered = list(self.enemies)
+        for enemy in ordered:
+            sim_ordered.append(sim_map[enemy])
+
+        sim_all_entities = [sim_player] + sim_enemies + list(self.decor_objects)
+
+        for sim_enemy in sim_enemies:
+            ai.init_ai(sim_enemy, sim_player, sim_enemies)
+
+        for sim_enemy in sim_ordered:
+            ai.begin_turn(sim_enemy, sim_player, sim_enemies, sim_ordered)
+
+        predictions = []
+        for enemy in ordered:
+            sim_enemy = sim_map[enemy]
+            target = sim_enemy.current_target or sim_player
+            path = ai.find_closest_attack_position(sim_enemy, target, sim_all_entities)
+            if not path or len(path) <= 1:
+                continue
+            steps = min(sim_enemy.move_speed, len(path) - 1)
+            end = path[steps]
+            predictions.append({'start': (sim_enemy.x, sim_enemy.y), 'end': end})
+            sim_enemy.x, sim_enemy.y = end
+
+        return predictions
+
     def _start_room_transition(self, entry_from, door_x):
         self.room_transition = {
             'state': 'fade_out',
@@ -898,6 +1054,7 @@ class CombatManager:
         }
         self.player_reachable_tiles = {}
         self.player_reach_parents = {}
+        self._reset_hover_preview()
 
     def _update_room_transition(self):
         if not self.room_transition:
@@ -931,6 +1088,7 @@ class CombatManager:
         self.telegraphs = []
         self.enemy_action_queue = []
         self.attack_queue = []
+        self._reset_hover_preview()
 
     def _handle_door_click(self, tile, all_entities):
         x, y = tile
@@ -1112,33 +1270,9 @@ class CombatManager:
         # Draw a brief yellow arrow from old to new enemy position
         if not self.move_arrow:
             return
-        sx, sy = self.move_arrow['start']
-        ex, ey = self.move_arrow['end']
-        sx = sx * TILE_SIZE + TILE_SIZE // 2
-        sy = sy * TILE_SIZE + TILE_SIZE // 2
-        ex = ex * TILE_SIZE + TILE_SIZE // 2
-        ey = ey * TILE_SIZE + TILE_SIZE // 2
-        color = 10  # yellow
-        pyxel.line(sx, sy, ex, ey, color)
-        # Arrowhead at the end pointing along movement direction
-        dx = ex - sx
-        dy = ey - sy
-        length = math.hypot(dx, dy) or 1.0
-        ndx = dx / length
-        ndy = dy / length
-        # Perpendicular vector
-        px = -ndy
-        py = ndx
-        head_len = 6  # pixels
-        head_w = 3    # pixels
-        bx = ex - int(ndx * head_len)
-        by = ey - int(ndy * head_len)
-        lx = int(bx + px * head_w)
-        ly = int(by + py * head_w)
-        rx = int(bx - px * head_w)
-        ry = int(by - py * head_w)
-        pyxel.line(ex, ey, lx, ly, color)
-        pyxel.line(ex, ey, rx, ry, color)
+        start = self.move_arrow['start']
+        end = self.move_arrow['end']
+        self._draw_arrow_segment(start, end, 10)
 
     def _compute_attack_order_map(self):
         attackers = [t.get('attacker') for t in self.telegraphs if t.get('attacker') is not None]

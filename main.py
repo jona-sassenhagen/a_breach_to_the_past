@@ -43,6 +43,7 @@ class App:
         for enemy in self.enemies:
             enemy.draw()
         self.combat_manager.draw_attack_renders()
+        self.combat_manager.draw_hover_predictions()
         self.combat_manager.draw_move_arrow()
         self.combat_manager.draw_projectiles()
         self.combat_manager.vfx_manager.draw()
