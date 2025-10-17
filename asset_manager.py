@@ -1,12 +1,10 @@
 import os
 import tempfile
+import struct
+import zlib
+import binascii
 import pyxel
 from constants import TILE_SIZE
-
-try:
-    from PIL import Image
-except Exception:
-    Image = None
 
 class AssetManager:
     def __init__(self):
@@ -109,7 +107,10 @@ class AssetManager:
                 tile_y = variant * block_rows + local_y
                 if total_rows is not None and tile_y >= total_rows:
                     break
-                chunk_span = self._tileset_chunk_span.get(img_bank, self._png_width(png_path) if png_path else len(fields) * TILE_SIZE)
+                chunk_span = self._tileset_chunk_span.get(
+                    img_bank,
+                    self._png_width(png_path) if png_path else len(fields) * TILE_SIZE,
+                )
                 rows_per_chunk = rows_per_bank
                 chunk_index = tile_y // rows_per_chunk
                 row_in_chunk = tile_y % rows_per_chunk
@@ -186,30 +187,107 @@ class AssetManager:
             self._tileset_chunk_span[img_bank] = width
             return
 
-        if Image is None:
+        chunks = self._slice_png_vertically(png_path, max_rows=256)
+        chunk_count = len(chunks)
+        if chunk_count * width > 256:
+            for path in chunks:
+                os.remove(path)
             raise RuntimeError(
-                f"{png_path} is taller than 256px; install Pillow to enable auto-slicing."
+                f"Sliced tileset {png_path} exceeds Pyxel image width; reduce stacking or re-slice."
             )
-
-        img = Image.open(png_path)
-        chunk_height = 256
-        chunk_count = 0
-        for offset in range(0, height, chunk_height):
-            box = (0, offset, width, min(height, offset + chunk_height))
-            chunk = img.crop(box)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                chunk.save(tmp.name)
-                x_offset = chunk_count * width
-                if x_offset + width > 256:
-                    os.remove(tmp.name)
-                    raise RuntimeError(
-                        f"Sliced tileset {png_path} exceeds Pyxel image width; reduce stacking or re-slice."
-                    )
-                pyxel.images[img_bank].load(x_offset, 0, tmp.name)
-                tmp_path = tmp.name
-            os.remove(tmp_path)
-            chunk_count += 1
+        for idx, chunk_path in enumerate(chunks):
+            x_offset = idx * width
+            pyxel.images[img_bank].load(x_offset, 0, chunk_path)
+            os.remove(chunk_path)
         self._tileset_chunk_span[img_bank] = width
+
+    def _slice_png_vertically(self, png_path: str, max_rows: int = 256) -> list[str]:
+        with open(png_path, 'rb') as f:
+            data = f.read()
+
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError(f"{png_path} is not a PNG file")
+
+        pos = 8
+        width = height = bit_depth = color_type = None
+        compression = filter_method = interlace = None
+        palette_chunks = []
+        trns_chunk = None
+        idat_data = b''
+
+        while pos < len(data):
+            length = int.from_bytes(data[pos:pos+4], 'big')
+            chunk_type = data[pos+4:pos+8]
+            chunk_data = data[pos+8:pos+8+length]
+            pos += 12 + length
+
+            if chunk_type == b'IHDR':
+                width = int.from_bytes(chunk_data[0:4], 'big')
+                height = int.from_bytes(chunk_data[4:8], 'big')
+                bit_depth = chunk_data[8]
+                color_type = chunk_data[9]
+                compression = chunk_data[10]
+                filter_method = chunk_data[11]
+                interlace = chunk_data[12]
+            elif chunk_type == b'PLTE':
+                palette_chunks.append(chunk_data)
+            elif chunk_type == b'tRNS':
+                trns_chunk = chunk_data
+            elif chunk_type == b'IDAT':
+                idat_data += chunk_data
+            elif chunk_type == b'IEND':
+                break
+
+        if width is None or height is None:
+            raise RuntimeError(f"{png_path} missing IHDR chunk")
+        if bit_depth != 8:
+            raise RuntimeError(f"{png_path} uses unsupported bit depth {bit_depth}")
+
+        if color_type == 0:      # Grayscale
+            bytes_per_pixel = 1
+        elif color_type == 2:    # Truecolor RGB
+            bytes_per_pixel = 3
+        elif color_type == 3:    # Indexed colour
+            bytes_per_pixel = 1
+        elif color_type == 4:    # Grayscale + alpha
+            bytes_per_pixel = 2
+        elif color_type == 6:    # Truecolor + alpha
+            bytes_per_pixel = 4
+        else:
+            raise RuntimeError(f"{png_path} uses unsupported color format: {color_type}")
+
+        raw = zlib.decompress(idat_data)
+        row_stride = bytes_per_pixel * width + 1  # include filter byte
+
+        chunks_paths: list[str] = []
+        for start_row in range(0, height, max_rows):
+            end_row = min(height, start_row + max_rows)
+            rows = raw[start_row * row_stride:end_row * row_stride]
+            chunk_height = end_row - start_row
+            compressed = zlib.compress(rows)
+            png_bytes = [b"\x89PNG\r\n\x1a\n"]
+            png_bytes.append(self._build_chunk(b'IHDR', struct.pack('>IIBBBBB', width, chunk_height, bit_depth, color_type, compression, filter_method, interlace)))
+            for plte in palette_chunks:
+                png_bytes.append(self._build_chunk(b'PLTE', plte))
+            if trns_chunk is not None:
+                png_bytes.append(self._build_chunk(b'tRNS', trns_chunk))
+            png_bytes.append(self._build_chunk(b'IDAT', compressed))
+            png_bytes.append(self._build_chunk(b'IEND', b''))
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                tmp.write(b''.join(png_bytes))
+            chunks_paths.append(tmp.name)
+        return chunks_paths
+
+    def _build_chunk(self, chunk_type: bytes, chunk_data: bytes) -> bytes:
+        length = len(chunk_data)
+        crc = binascii.crc32(chunk_type)
+        crc = binascii.crc32(chunk_data, crc) & 0xffffffff
+        return (
+            struct.pack('>I', length)
+            + chunk_type
+            + chunk_data
+            + struct.pack('>I', crc)
+        )
 
     def _register_anim_strip(self, anim_name: str, img_bank: int, base_y: int, frames: int, frame_w: int = 16, base_x: int = 0):
         if frames <= 0:
