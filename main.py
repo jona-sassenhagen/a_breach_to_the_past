@@ -47,11 +47,18 @@ class App:
             if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) or pyxel.btnp(pyxel.KEY_SPACE):
                 self.reset_world()
             return
+        if self.combat_manager and self.combat_manager.victory:
+            if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) or pyxel.btnp(pyxel.KEY_SPACE):
+                self.reset_world()
+            return
         if self.combat_manager is None:
             self.reset_world()
             return
 
         self.combat_manager.update()
+        # CombatManager may regenerate the active tilemap when advancing rooms;
+        # mirror its reference so draws use the latest variant.
+        self.tilemap = self.combat_manager.tilemap
         self.enemies = self.combat_manager.enemies
         time.sleep(0.05)
 
@@ -83,6 +90,8 @@ class App:
         self.combat_manager.draw_room_transition_overlay()
         if self.combat_manager.player_dead:
             self.draw_death_screen()
+        elif self.combat_manager.victory:
+            self.draw_victory_screen()
 
     def reset_world(self):
         if self.asset_manager is None:
@@ -90,6 +99,7 @@ class App:
         self.tilemap = Tilemap(self.asset_manager)
         start_x = getattr(self.tilemap, 'top_door_xs', [1])[0]
         self.player = Player(start_x, 1, self.tilemap, self.asset_manager)
+        setattr(self.player, 'coins', 0)
         enemies = [
             DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
             Spider(6, 2, self.tilemap, self.asset_manager),
@@ -132,6 +142,13 @@ class App:
         pyxel.text(shadow_x, shadow_y, f"Coins: {coins}", 0)  # shadow (black)
         pyxel.text(text_x, text_y, f"Coins: {coins}", 7)      # main text (white)
 
+        room = getattr(self.combat_manager, 'room_index', 1)
+        total_rooms = getattr(self.combat_manager, 'max_rooms', 1)
+        room_text = f"Room {room}/{total_rooms}"
+        base_y = 160 - 10
+        pyxel.text(3, base_y + 1, room_text, 0)
+        pyxel.text(2, base_y, room_text, 7)
+
     def draw_title(self):
         pyxel.cls(0)
         text_y = 30
@@ -165,6 +182,19 @@ class App:
         pyxel.rect(0, 0, 160, 160, 0)
         pyxel.text(20, 60, "You died a gruseome death", 7)
         pyxel.text(38, 80, "Click to play again", 7)
+        y = 105
+        pyxel.text(20, y, "Credits:", 7)
+        y += 10
+        for line in self.credits:
+            pyxel.text(20, y, line, 7)
+            y += 10
+
+    def draw_victory_screen(self):
+        pyxel.rect(0, 0, 160, 160, 0)
+        coins = getattr(self.player, 'coins', 0)
+        pyxel.text(34, 40, "You conquered DUNGEON BREACH!", 7)
+        pyxel.text(42, 60, f"Coins collected: {coins}", 7)
+        pyxel.text(46, 80, "Click to play again", 7)
         y = 105
         pyxel.text(20, y, "Credits:", 7)
         y += 10

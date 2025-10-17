@@ -2,7 +2,7 @@ from typing import List, Optional, Tuple, Dict
 from collections import deque
 
 from constants import MAP_WIDTH, MAP_HEIGHT
-from map import WALL, PIT
+from map import is_walkable_tile
 
 
 def init_ai(enemy, player, enemies: List):
@@ -90,10 +90,9 @@ def get_attack_positions_adjacent(enemy, target) -> List[Tuple[int, int]]:
         tx, ty = target.x + dx, target.y + dy
         if 0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT:
             tile = enemy.tilemap.tiles[ty][tx]
-            if tile != WALL and tile != PIT:
-                door_info = enemy.tilemap.tile_states.get((tx, ty))
-                if not (door_info and door_info.get('state') == 'closed'):
-                    positions.append((tx, ty))
+            door_info = enemy.tilemap.tile_states.get((tx, ty))
+            if is_walkable_tile(tile, door_info):
+                positions.append((tx, ty))
     return positions
 
 
@@ -118,10 +117,8 @@ def _pathfinding_avoid_entities(enemy, goal_x: int, goal_y: int, all_entities: L
                 if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
                     return False
                 tile = enemy.tilemap.tiles[ty][tx]
-                if tile == WALL or tile == PIT:
-                    return False
                 door_info = enemy.tilemap.tile_states.get((tx, ty))
-                if door_info and door_info.get('state') == 'closed':
+                if not is_walkable_tile(tile, door_info):
                     return False
                 for e in all_entities:
                     if e is enemy:
@@ -179,10 +176,8 @@ def get_attack_positions_slime(enemy, target) -> List[Tuple[int, int]]:
     y = target.y
     for x in range(MAP_WIDTH):
         tile = enemy.tilemap.tiles[y][x]
-        if tile == WALL or tile == PIT:
-            continue
         door_info = enemy.tilemap.tile_states.get((x, y))
-        if door_info and door_info.get('state') == 'closed':
+        if not is_walkable_tile(tile, door_info):
             continue
         blocked = False
         if x < target.x:
@@ -191,11 +186,8 @@ def get_attack_positions_slime(enemy, target) -> List[Tuple[int, int]]:
             rng = range(target.x + 1, x)
         for cx in rng:
             t = enemy.tilemap.tiles[y][cx]
-            if t == WALL or t == PIT:
-                blocked = True
-                break
             d = enemy.tilemap.tile_states.get((cx, y))
-            if d and d.get('state') == 'closed':
+            if not is_walkable_tile(t, d):
                 blocked = True
                 break
         if not blocked and (abs(x - target.x) % 2 == 0):
@@ -204,10 +196,8 @@ def get_attack_positions_slime(enemy, target) -> List[Tuple[int, int]]:
     x = target.x
     for y in range(MAP_HEIGHT):
         tile = enemy.tilemap.tiles[y][x]
-        if tile == WALL or tile == PIT:
-            continue
         door_info = enemy.tilemap.tile_states.get((x, y))
-        if door_info and door_info.get('state') == 'closed':
+        if not is_walkable_tile(tile, door_info):
             continue
         blocked = False
         if y < target.y:
@@ -216,11 +206,8 @@ def get_attack_positions_slime(enemy, target) -> List[Tuple[int, int]]:
             rng = range(target.y + 1, y)
         for cy in rng:
             t = enemy.tilemap.tiles[cy][x]
-            if t == WALL or t == PIT:
-                blocked = True
-                break
             d = enemy.tilemap.tile_states.get((x, cy))
-            if d and d.get('state') == 'closed':
+            if not is_walkable_tile(t, d):
                 blocked = True
                 break
         if not blocked and (abs(y - target.y) % 2 == 0):
@@ -252,10 +239,8 @@ def telegraph_slime(enemy, target):
             if not (0 <= x < MAP_WIDTH):
                 break
             tile = enemy.tilemap.tiles[y][x]
-            if tile == WALL or tile == PIT:
-                break
             door_info = enemy.tilemap.tile_states.get((x, y))
-            if door_info and door_info.get('state') == 'closed':
+            if not is_walkable_tile(tile, door_info):
                 break
             path.append((x, y))
     # Vertical alignment
@@ -268,10 +253,8 @@ def telegraph_slime(enemy, target):
             if not (0 <= y < MAP_HEIGHT):
                 break
             tile = enemy.tilemap.tiles[y][x]
-            if tile == WALL or tile == PIT:
-                break
             door_info = enemy.tilemap.tile_states.get((x, y))
-            if door_info and door_info.get('state') == 'closed':
+            if not is_walkable_tile(tile, door_info):
                 break
             path.append((x, y))
     if not path:

@@ -2,12 +2,12 @@ import pyxel
 import time
 import math
 from enum import Enum
-from map import PIT, WALL, Tilemap
+from map import Tilemap, is_walkable_tile
 from entity import SlimeProjectile, Decor, Treasure, DumbSlime, Spider, Spinner
 import random
 import ai
 from vfx import VfxManager
-from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT
+from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, MAX_FLOORS
 
 
 class _SimEntity:
@@ -29,14 +29,8 @@ class _SimEntity:
                 if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
                     return False
                 tile = self.tilemap.tiles[ty][tx]
-                if tile == PIT:
-                    return False
-                if tile == WALL:
-                    door_info = self.tilemap.tile_states.get((tx, ty))
-                    if not (door_info and door_info.get('state') == 'open'):
-                        return False
                 door_info = self.tilemap.tile_states.get((tx, ty))
-                if door_info and door_info.get('state') == 'closed':
+                if not is_walkable_tile(tile, door_info):
                     return False
                 for entity in all_entities:
                     if entity is self:
@@ -82,6 +76,17 @@ class CombatManager:
         self.player = player
         self.enemies = enemies
         self.tilemap = tilemap
+        base_variant_count = (
+            player.asset_manager.get_tile_variant_count("floor_center")
+            or player.asset_manager.get_tile_variant_count("horizontal")
+            or 1
+        )
+        self._tile_variant_count = max(1, base_variant_count)
+        initial_variant = getattr(tilemap, 'variant_index', 0) % self._tile_variant_count
+        self._current_tile_variant = initial_variant
+        self.max_rooms = max(1, min(MAX_FLOORS, self._tile_variant_count))
+        self.room_index = min(self.max_rooms, initial_variant + 1)
+        self.victory = False
         self.current_phase = GamePhase.ENEMY_MOVE_TELEGRAPH
         self.telegraphs = []
         self.projectiles = []
@@ -154,7 +159,7 @@ class CombatManager:
         }
 
     def update(self):
-        if self.player_dead:
+        if self.player_dead or self.victory:
             return
         if self.room_transition:
             self._update_room_transition()
@@ -259,8 +264,14 @@ class CombatManager:
                 elif action['action'] == 'move':
                     path = action.get('path') or []
                     old_pos = (enemy.x, enemy.y)
-                    for step in path:
-                        enemy.x, enemy.y = step
+                    if path:
+                        all_entities = [self.player] + self.enemies + self.decor_objects
+                        for step in path:
+                            nx, ny = step
+                            if enemy.can_occupy(nx, ny, all_entities):
+                                enemy.x, enemy.y = nx, ny
+                            else:
+                                break
                     new_pos = (enemy.x, enemy.y)
                     if new_pos != old_pos:
                         self.move_arrow = {'start': old_pos, 'end': new_pos}
@@ -553,8 +564,15 @@ class CombatManager:
         self.decor_objects = keep
 
     def _generate_room(self, entry_from: str, entry_x: int):
-        # Regenerate tilemap
-        self.tilemap = Tilemap(self.player.asset_manager)
+        if self.room_index >= self.max_rooms:
+            self._on_victory()
+            return False
+
+        # Regenerate tilemap for the next floor slice
+        self.room_index += 1
+        next_variant = min(self.room_index - 1, self._tile_variant_count - 1)
+        self._current_tile_variant = next_variant
+        self.tilemap = Tilemap(self.player.asset_manager, next_variant)
         # Rebind tilemap on player and existing enemies
         self.player.tilemap = self.tilemap
         for e in self.enemies:
@@ -617,6 +635,7 @@ class CombatManager:
         self.current_phase = GamePhase.ENEMY_MOVE_TELEGRAPH
         self.phase_started = True
         self.phase_complete = False
+        return True
 
     def handle_projectile_resolution_phase(self):
         self.update_projectiles()
@@ -790,7 +809,8 @@ class CombatManager:
                         continue
 
                 tile = self.tilemap.tiles[tile_y][tile_x]
-                if tile == PIT or tile == WALL:
+                door_info = self.tilemap.tile_states.get((tile_x, tile_y))
+                if not is_walkable_tile(tile, door_info):
                     if not getattr(p, 'cosmetic', False):
                         self.vfx_manager.add_particles(p.x + TILE_SIZE / 2, p.y + TILE_SIZE / 2, 8, 20)
                     if p in self.projectiles:
@@ -975,7 +995,8 @@ class CombatManager:
         if not (0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT):
             return
         tile = self.tilemap.tiles[y][x]
-        if tile == WALL or tile == PIT:
+        door_info = self.tilemap.tile_states.get((x, y))
+        if not is_walkable_tile(tile, door_info):
             return
         name_list = getattr(self.player.asset_manager, 'treasure_names', [])
         if not name_list:
@@ -1171,6 +1192,11 @@ class CombatManager:
         return predictions
 
     def _start_room_transition(self, entry_from, door_x):
+        if self.victory:
+            return False
+        if self.room_index >= self.max_rooms:
+            self._on_victory()
+            return True
         self.room_transition = {
             'state': 'fade_out',
             'timer': 0,
@@ -1181,6 +1207,7 @@ class CombatManager:
         self.player_reach_parents = {}
         self._reset_hover_preview()
         self.locked_enemy_plan = []
+        return True
 
     def _update_room_transition(self):
         if not self.room_transition:
@@ -1191,7 +1218,9 @@ class CombatManager:
             if rt['timer'] >= self._transition_frames:
                 entry_from = rt['entry_from']
                 door_x = rt['door_x']
-                self._generate_room(entry_from, door_x)
+                generated = self._generate_room(entry_from, door_x)
+                if not generated:
+                    return
                 self.room_transition = {
                     'state': 'fade_in',
                     'timer': 0,
@@ -1206,6 +1235,21 @@ class CombatManager:
         if self.player_dead:
             return
         self.player_dead = True
+        self.room_transition = None
+        self.move_arrow = None
+        self.move_arrow_ticks = 0
+        self.attack_renders = []
+        self.projectiles = []
+        self.telegraphs = []
+        self.enemy_action_queue = []
+        self.attack_queue = []
+        self._reset_hover_preview()
+        self.locked_enemy_plan = []
+
+    def _on_victory(self):
+        if self.victory:
+            return
+        self.victory = True
         self.room_transition = None
         self.move_arrow = None
         self.move_arrow_ticks = 0
@@ -1247,8 +1291,7 @@ class CombatManager:
             if path:
                 self._show_move_arrow(start_pos, (self.player.x, self.player.y), steps)
 
-        self._start_room_transition(entry_from, door_x)
-        return True
+        return self._start_room_transition(entry_from, door_x)
 
     def _check_keyboard_room_transition(self):
         # Top doors: player stands at y==1 and presses up into the top wall

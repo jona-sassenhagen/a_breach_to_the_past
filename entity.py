@@ -1,6 +1,6 @@
 import pyxel
 from collections import deque
-from map import WALL, PIT
+from map import is_walkable_tile
 import ai
 from typing import List, Optional, Tuple, Dict
 from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, DOOR
@@ -32,15 +32,8 @@ class Entity:
                 if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
                     return False
                 tile = self.tilemap.tiles[ty][tx]
-                if tile == PIT:
-                    return False
-                # Allow passage through walls only if there is an open door state at this tile
-                if tile == WALL:
-                    door_info = self.tilemap.tile_states.get((tx, ty))
-                    if not (door_info and door_info.get('state') == 'open'):
-                        return False
                 door_info = self.tilemap.tile_states.get((tx, ty))
-                if door_info and door_info.get('state') == 'closed':
+                if not is_walkable_tile(tile, door_info):
                     return False
 
                 # Check for collision with other entities
@@ -108,11 +101,8 @@ class Entity:
                             valid = False
                             break
                         tile = self.tilemap.tiles[ty][tx]
-                        if tile == WALL or tile == PIT:
-                            valid = False
-                            break
                         door_info = self.tilemap.tile_states.get((tx, ty))
-                        if door_info and door_info.get('state') == 'closed':
+                        if not is_walkable_tile(tile, door_info):
                             valid = False
                             break
                     if not valid:

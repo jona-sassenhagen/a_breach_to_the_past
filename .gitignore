@@ -8,6 +8,8 @@ venv/
 # Local configuration
 .env
 .DS_Store
+**/.DS_Store
+
 
 # Pyxel web build output
 build/

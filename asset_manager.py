@@ -1,4 +1,12 @@
+import os
+import tempfile
 import pyxel
+from constants import TILE_SIZE
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 class AssetManager:
     def __init__(self):
@@ -6,14 +14,19 @@ class AssetManager:
         self.anim_map = {}
         self.decor_names = []
         self.treasure_names = []
+        self._tileset_chunk_span = {}
         self.load_assets()
 
     def load_assets(self):
-        # Load tilemap assets into banks 1 and 2
-        pyxel.images[1].load(0, 0, "static_assets/walls.png")
-        pyxel.images[2].load(0, 0, "static_assets/floors.png")
-        self.parse_tile_mapping("static_assets/walls.txt", 1)
-        self.parse_tile_mapping("static_assets/floors.txt", 2)
+        # Load tilemap assets into dedicated banks
+        walls_png = "static_assets/walls.png"
+        floors_png = "static_assets/floors.png"
+        # Load tall atlases with horizontal chunking to stay within Pyxel's 256px height limit
+        self._load_tileset(walls_png, img_bank=1)
+        self._load_tileset(floors_png, img_bank=2)
+        self.parse_tile_mapping("static_assets/walls.txt", 1, walls_png)
+        # Floor atlas variants are stacked 3 rows tall per layout
+        self.parse_tile_mapping("static_assets/floors.txt", 2, floors_png, rows_per_variant=3)
 
         # Load all sprite assets into image bank 0 at different y-coordinates
         pyxel.images[0].load(0, 0, "sprite_assets/char_1.png")
@@ -63,12 +76,69 @@ class AssetManager:
         self.parse_decor_mapping("static_assets/decor.txt", 0, base_decor_y, "static_assets/decor.png", base_x=base_decor_x)
         self.parse_treasure_mapping("static_assets/treasure.txt", 0, base_treasure_y, "static_assets/treasure.png", base_x=base_treasure_x)
 
-    def parse_tile_mapping(self, txt_file, img_bank):
+    def parse_tile_mapping(self, txt_file, img_bank, png_path=None, rows_per_variant=None):
+        rows: list[list[str]] = []
         with open(txt_file, 'r') as f:
-            for y, line in enumerate(f.readlines()):
-                for x, name in enumerate(line.strip().split('\t')):
-                    if name != '_':
-                        self.tile_map[name] = (img_bank, x * 16, y * 16)
+            for raw in f.readlines():
+                line = raw.rstrip('\n')
+                if not line.strip():
+                    continue
+                rows.append(line.split('\t'))
+
+        if not rows:
+            return
+
+        base_rows = len(rows)
+        block_rows = max(1, rows_per_variant or base_rows)
+
+        total_rows = None
+        if png_path:
+            total_rows = max(1, self._png_height(png_path) // 16)
+
+        rows_per_bank = 256 // TILE_SIZE
+        if total_rows is None:
+            variant_count = 1
+        else:
+            variant_count = max(1, (total_rows + block_rows - 1) // block_rows)
+
+        for variant in range(variant_count):
+            for local_y in range(block_rows):
+                if local_y >= base_rows:
+                    break
+                fields = rows[local_y]
+                tile_y = variant * block_rows + local_y
+                if total_rows is not None and tile_y >= total_rows:
+                    break
+                chunk_span = self._tileset_chunk_span.get(img_bank, self._png_width(png_path) if png_path else len(fields) * TILE_SIZE)
+                rows_per_chunk = rows_per_bank
+                chunk_index = tile_y // rows_per_chunk
+                row_in_chunk = tile_y % rows_per_chunk
+                v = row_in_chunk * TILE_SIZE
+                for x, name in enumerate(fields):
+                    if not name or name == '_':
+                        continue
+                    u = x * TILE_SIZE + chunk_index * chunk_span
+                    self.tile_map.setdefault(name, []).append((img_bank, u, v))
+
+        if base_rows > block_rows:
+            extra_rows = rows[block_rows:]
+            # Map leftover definitions onto the last available row to keep names accessible.
+            if total_rows is None:
+                tile_y = block_rows - 1
+            else:
+                tile_y = max(0, min(total_rows - 1, variant_count * block_rows))
+            chunk_span = self._tileset_chunk_span.get(img_bank, self._png_width(png_path) if png_path else len(rows[0]) * TILE_SIZE)
+            rows_per_chunk = rows_per_bank
+            for local_offset, fields in enumerate(extra_rows):
+                extra_tile_y = tile_y + local_offset
+                chunk_index = extra_tile_y // rows_per_chunk
+                row_in_chunk = extra_tile_y % rows_per_chunk
+                v = row_in_chunk * TILE_SIZE
+                for x, name in enumerate(fields):
+                    if not name or name == '_':
+                        continue
+                    u = x * TILE_SIZE + chunk_index * chunk_span
+                    self.tile_map.setdefault(name, []).append((img_bank, u, v))
 
     def parse_anim_mapping(self, txt_file, img_bank, anim_name, base_y):
         self.anim_map[anim_name] = []
@@ -108,6 +178,39 @@ class AssetManager:
             height = int.from_bytes(data[4:8], 'big')
             return height if height > 0 else 0
 
+    def _load_tileset(self, png_path: str, img_bank: int):
+        height = self._png_height(png_path)
+        width = self._png_width(png_path)
+        if height <= 256:
+            pyxel.images[img_bank].load(0, 0, png_path)
+            self._tileset_chunk_span[img_bank] = width
+            return
+
+        if Image is None:
+            raise RuntimeError(
+                f"{png_path} is taller than 256px; install Pillow to enable auto-slicing."
+            )
+
+        img = Image.open(png_path)
+        chunk_height = 256
+        chunk_count = 0
+        for offset in range(0, height, chunk_height):
+            box = (0, offset, width, min(height, offset + chunk_height))
+            chunk = img.crop(box)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                chunk.save(tmp.name)
+                x_offset = chunk_count * width
+                if x_offset + width > 256:
+                    os.remove(tmp.name)
+                    raise RuntimeError(
+                        f"Sliced tileset {png_path} exceeds Pyxel image width; reduce stacking or re-slice."
+                    )
+                pyxel.images[img_bank].load(x_offset, 0, tmp.name)
+                tmp_path = tmp.name
+            os.remove(tmp_path)
+            chunk_count += 1
+        self._tileset_chunk_span[img_bank] = width
+
     def _register_anim_strip(self, anim_name: str, img_bank: int, base_y: int, frames: int, frame_w: int = 16, base_x: int = 0):
         if frames <= 0:
             frames = 1
@@ -121,7 +224,7 @@ class AssetManager:
             names = line.strip().replace('\t', ' ').split(' ')
             for x, name in enumerate(names):
                 if name:
-                    self.tile_map[name] = (img_bank, x * 16, base_y)
+                    self.tile_map.setdefault(name, []).append((img_bank, x * 16, base_y))
 
     def parse_decor_mapping(self, txt_file, img_bank, base_y, png_path, base_x: int = 0):
         # Tab-separated grid; supports multiple rows. Some rows may contain spaces in names; treat spaces as part of name.
@@ -136,7 +239,7 @@ class AssetManager:
                 fields = [field for field in line.rstrip('\n').split('\t')]
                 for x, name in enumerate(fields):
                     if name and name != '_' and name.lower() != 'empty':
-                        self.tile_map[name] = (img_bank, base_x + x * 16, base_y + y * 16)
+                        self.tile_map.setdefault(name, []).append((img_bank, base_x + x * 16, base_y + y * 16))
                         names_accum.append(name)
         # Keep a list of available decor sprite names
         self.decor_names = names_accum
@@ -151,15 +254,32 @@ class AssetManager:
                 fields = [field for field in line.rstrip('\n').split('\t')]
                 for x, name in enumerate(fields):
                     if name and name != '_' and name.lower() != 'empty':
-                        self.tile_map[name] = (img_bank, base_x + x * 16, base_y + y * 16)
+                        self.tile_map.setdefault(name, []).append((img_bank, base_x + x * 16, base_y + y * 16))
                         names_accum.append(name)
         self.treasure_names = names_accum
 
-    def get_tile(self, name):
-        return self.tile_map.get(name)
+    def get_tile(self, name, variant_index: int = 0):
+        entry = self.tile_map.get(name)
+        if entry is None:
+            return None
+        if isinstance(entry, list):
+            if not entry:
+                return None
+            if variant_index < len(entry):
+                return entry[variant_index]
+            return entry[-1]
+        return entry
 
     def get_anim(self, name):
         return self.anim_map.get(name)
+
+    def get_tile_variant_count(self, name: str) -> int:
+        entry = self.tile_map.get(name)
+        if entry is None:
+            return 0
+        if isinstance(entry, list):
+            return len(entry)
+        return 1
 
     def get_anim_widths(self, name):
         # Uniform widths for all frames as per registration

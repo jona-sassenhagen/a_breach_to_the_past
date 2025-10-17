@@ -1,15 +1,30 @@
 import pyxel
 from map_layout import get_layout
-from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, DOOR
+from constants import TILE_SIZE, MAP_WIDTH, MAP_HEIGHT
 
 # Tile types (now strings)
 FLOOR = "floor_center"
-WALL = "horizontal"
 PIT = "pit"
 
+
+def is_walkable_tile(tile_name, door_info):
+    if tile_name == PIT:
+        return False
+    if door_info and door_info.get('state') == 'closed':
+        return False
+    if tile_name and tile_name.startswith('floor'):
+        return True
+    if door_info and door_info.get('state') == 'open':
+        return True
+    return False
+
 class Tilemap:
-    def __init__(self, asset_manager):
+    def __init__(self, asset_manager, variant_index: int = 0):
         self.asset_manager = asset_manager
+        floor_variants = asset_manager.get_tile_variant_count("floor_center") or 1
+        wall_variants = asset_manager.get_tile_variant_count("horizontal") or 1
+        self.variant_count = max(1, min(floor_variants, wall_variants))
+        self.variant_index = variant_index % self.variant_count
         self.tiles = get_layout()
         self.tile_states = {}
 
@@ -38,7 +53,7 @@ class Tilemap:
                 if tile_name == PIT:
                     pyxel.rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE, 0)
                 else:
-                    tile_asset = self.asset_manager.get_tile(tile_name)
+                    tile_asset = self.asset_manager.get_tile(tile_name, self.variant_index)
                     if tile_asset:
                         img_bank, u, v = tile_asset
                         pyxel.blt(x * TILE_SIZE, y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
@@ -54,7 +69,7 @@ class Tilemap:
                         asset_name = f"door_closed_{door_info['orientation']}"
                     else:
                         asset_name = f"door_open_{door_info['orientation']}"
-                    tile_asset = self.asset_manager.get_tile(asset_name)
+                    tile_asset = self.asset_manager.get_tile(asset_name, self.variant_index)
                     if tile_asset:
                         img_bank, u, v = tile_asset
                         pyxel.blt(x * TILE_SIZE, y * TILE_SIZE, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)
