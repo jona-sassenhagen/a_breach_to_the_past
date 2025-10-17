@@ -9,7 +9,7 @@ venv/
 .env
 .DS_Store
 **/.DS_Store
-
+static_assets/.DS_Store
 
 # Pyxel web build output
 build/
