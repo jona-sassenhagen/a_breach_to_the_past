@@ -1,5 +1,9 @@
 
 import os
+import json
+import threading
+import urllib.request
+import urllib.error
 from typing import Tuple
 
 try:
@@ -14,6 +18,9 @@ from map import Tilemap
 from entity import Player, DumbSlime, Spider, Spinner, Phantom
 from combat import CombatManager
 from constants import TILE_SIZE
+
+LEADERBOARD_URL = os.getenv("DUNGEON_BREACH_LEADERBOARD", "").strip()
+DEFAULT_PLAYER_NAME = os.getenv("DUNGEON_BREACH_PLAYER", "Player")[:12] or "Player"
 
 class App:
     def __init__(self):
@@ -30,6 +37,14 @@ class App:
         self.credits = self._load_credits()
         self.title_frame_counter = 0
         self.title_input_armed = False
+        self.player_name = DEFAULT_PLAYER_NAME
+        self.leaderboard: list[dict] = []
+        self._leaderboard_lock = threading.Lock()
+        self._score_submitted = False
+        self._lb_thread_running = False
+        self._pending_leaderboard_refresh = False
+        if LEADERBOARD_URL:
+            self._refresh_leaderboard_async()
         pyxel.run(self.update, self.draw)
 
     def update(self):
@@ -60,6 +75,7 @@ class App:
         # mirror its reference so draws use the latest variant.
         self.tilemap = self.combat_manager.tilemap
         self.enemies = self.combat_manager.enemies
+        self._maybe_submit_score()
         time.sleep(0.05)
 
     def draw(self):
@@ -100,9 +116,10 @@ class App:
         start_x = getattr(self.tilemap, 'top_door_xs', [1])[0]
         self.player = Player(start_x, 1, self.tilemap, self.asset_manager)
         setattr(self.player, 'coins', 0)
-        enemies: list = []
-        self.enemies = enemies
+        self.enemies = []
         self.combat_manager = CombatManager(self.player, self.enemies, self.tilemap)
+        self.tilemap = self.combat_manager.tilemap
+        self._score_submitted = False
 
     def _load_title_image(self) -> Tuple[bool, Tuple[int, int]]:
         path = "static_assets/title.png"
@@ -152,6 +169,8 @@ class App:
         pyxel.text(turn_x + 1, base_y + 1, turn_text, 0)
         pyxel.text(turn_x, base_y, turn_text, 7)
 
+        self._draw_in_game_leaderboard()
+
     def draw_title(self):
         pyxel.cls(0)
         text_y = 30
@@ -181,6 +200,11 @@ class App:
             pyxel.text(4, text_y, line, 7)
             text_y += 10
 
+        block_y = text_y + 4
+        entries = self._get_leaderboard_snapshot()[:5]
+        title = "Top Delvers" if LEADERBOARD_URL else "Leaderboard disabled"
+        self._draw_leaderboard_block(4, block_y, entries, title)
+
     def draw_death_screen(self):
         pyxel.rect(0, 0, 160, 160, 0)
         pyxel.text(20, 60, "You died a gruseome death", 7)
@@ -198,6 +222,9 @@ class App:
             pyxel.text(20, y, line, 7)
             y += 10
 
+        entries = self._get_leaderboard_snapshot()[:5]
+        self._draw_leaderboard_block(20, y + 4, entries, "Top Delvers")
+
     def draw_victory_screen(self):
         pyxel.rect(0, 0, 160, 160, 0)
         coins = getattr(self.player, 'coins', 0)
@@ -214,6 +241,9 @@ class App:
         for line in self.credits:
             pyxel.text(20, y, line, 7)
             y += 10
+
+        entries = self._get_leaderboard_snapshot()[:5]
+        self._draw_leaderboard_block(20, y + 4, entries, "Top Delvers")
 
     def draw_hp_bar(self, unit_x, unit_y, hp):
         for i in range(hp):
@@ -236,5 +266,113 @@ class App:
             return []
         extras = ["Pyxel by @kitao"]
         return (lines + extras)[:3]
+
+    def _draw_in_game_leaderboard(self):
+        if not LEADERBOARD_URL:
+            return
+        entries = self._get_leaderboard_snapshot()[:3]
+        if not entries:
+            return
+        x = 110
+        y = 18
+        pyxel.rect(x - 2, y - 2, 50, 36, 1)
+        pyxel.text(x, y, "Top:", 7)
+        y += 8
+        for entry in entries:
+            name = str(entry.get('name', ''))[:5]
+            coins = entry.get('score', 0)
+            pyxel.text(x, y, f"{name:<5} {coins:>3}", 7)
+            y += 8
+
+    def _draw_leaderboard_block(self, x: int, y: int, entries: list, title: str):
+        pyxel.text(x, y, title, 7)
+        y += 8
+        if not LEADERBOARD_URL:
+            pyxel.text(x, y, "Set DUNGEON_BREACH_LEADERBOARD", 6)
+            return
+        if not entries:
+            pyxel.text(x, y, "(Updating...)", 6)
+            return
+        for entry in entries:
+            name = str(entry.get('name', ''))[:12]
+            coins = entry.get('score', 0)
+            turns = entry.get('turns')
+            line = f"{name:<12} {coins:>3}c"
+            if turns is not None:
+                line += f" {int(turns):>3}t"
+            pyxel.text(x, y, line, 7)
+            y += 8
+
+    def _get_leaderboard_snapshot(self):
+        with self._leaderboard_lock:
+            return list(self.leaderboard)
+
+    def _refresh_leaderboard_async(self):
+        if not LEADERBOARD_URL or getattr(self, '_lb_thread_running', False):
+            return
+
+        def worker():
+            try:
+                data = self._fetch_leaderboard()
+                if data:
+                    with self._leaderboard_lock:
+                        self.leaderboard = data
+            finally:
+                self._lb_thread_running = False
+
+        self._lb_thread_running = True
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fetch_leaderboard(self):
+        try:
+            req = urllib.request.Request(LEADERBOARD_URL, headers={'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = resp.read().decode('utf-8')
+                data = json.loads(payload)
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+        return []
+
+    def _post_score_async(self, name: str, coins: int, turns: int):
+        if not LEADERBOARD_URL:
+            return
+        payload = json.dumps({
+            'name': name,
+            'score': int(coins),
+            'turns': int(turns),
+        }).encode('utf-8')
+
+        def worker():
+            try:
+                req = urllib.request.Request(
+                    LEADERBOARD_URL,
+                    data=payload,
+                    headers={'Content-Type': 'application/json'}
+                )
+                urllib.request.urlopen(req, timeout=5)
+            except Exception:
+                pass
+            finally:
+                self._pending_leaderboard_refresh = True
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _maybe_submit_score(self):
+        if not self.combat_manager:
+            return
+        if getattr(self, '_pending_leaderboard_refresh', False):
+            self._pending_leaderboard_refresh = False
+            self._refresh_leaderboard_async()
+        if self._score_submitted:
+            return
+        if not (self.combat_manager.victory or self.combat_manager.player_dead):
+            return
+        coins = getattr(self.player, 'coins', 0)
+        turns = getattr(self.combat_manager, 'turn_count', 0)
+        name = (self.player_name or "Player")[:12]
+        self._score_submitted = True
+        self._post_score_async(name, coins, turns)
 
 App()

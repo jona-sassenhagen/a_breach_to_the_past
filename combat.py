@@ -75,17 +75,29 @@ class CombatManager:
     def __init__(self, player, enemies, tilemap):
         self.player = player
         self.enemies = list(enemies)
-        self.tilemap = tilemap
         base_variant_count = (
             player.asset_manager.get_tile_variant_count("floor_center")
             or player.asset_manager.get_tile_variant_count("horizontal")
             or 1
         )
         self._tile_variant_count = max(1, base_variant_count)
-        initial_variant = getattr(tilemap, 'variant_index', 0) % self._tile_variant_count
+
+        desired_rooms = max(1, min(MAX_FLOORS, self._tile_variant_count))
+        sequence = list(range(self._tile_variant_count))
+        random.shuffle(sequence)
+        self.variant_sequence = sequence[:desired_rooms]
+        if not self.variant_sequence:
+            self.variant_sequence = [0]
+
+        self.max_rooms = len(self.variant_sequence)
+        self.current_room_idx = 0
+        initial_variant = self.variant_sequence[0]
         self._current_tile_variant = initial_variant
-        self.max_rooms = max(1, min(MAX_FLOORS, self._tile_variant_count))
-        self.room_index = min(self.max_rooms, initial_variant + 1)
+        self.room_index = 1
+        self.tilemap = Tilemap(self.player.asset_manager, initial_variant)
+        self.player.tilemap = self.tilemap
+        for e in self.enemies:
+            e.tilemap = self.tilemap
         self.victory = False
         self.current_phase = GamePhase.ENEMY_MOVE_TELEGRAPH
         self.telegraphs = []
@@ -120,7 +132,7 @@ class CombatManager:
         self._counted_dead = set()
 
         # Deterministic initiative order and attack order visualization
-        self.enemy_initiative = list(enemies)
+        self.enemy_initiative = []
         self.attack_order_map = {}
 
         # Sequential attack processing
@@ -154,10 +166,8 @@ class CombatManager:
             GamePhase.PROJECTILE_RESOLUTION: GamePhase.ENEMY_MOVE_TELEGRAPH, # Loop back
         }
 
-        if not self.enemies:
-            self._clear_room_contents()
-            self._spawn_room_contents(self._room_progress())
-        self.enemy_initiative = list(self.enemies)
+        self._clear_room_contents()
+        self._spawn_room_contents(self._room_progress())
 
     def update(self):
         if self.player_dead or self.victory:
@@ -575,16 +585,16 @@ class CombatManager:
         self.decor_objects = keep
 
     def _generate_room(self, entry_from: str, entry_x: int):
-        if self.room_index >= self.max_rooms:
+        if self.current_room_idx + 1 >= self.max_rooms:
             self._on_victory()
             return False
 
         # Regenerate tilemap for the next floor slice
-        self.room_index += 1
-        next_variant = min(self.room_index - 1, self._tile_variant_count - 1)
+        self.current_room_idx += 1
+        self.room_index = self.current_room_idx + 1
+        next_variant = self.variant_sequence[self.current_room_idx]
         self._current_tile_variant = next_variant
         self.tilemap = Tilemap(self.player.asset_manager, next_variant)
-        # Rebind tilemap on player and existing enemies
         self.player.tilemap = self.tilemap
         for e in self.enemies:
             e.tilemap = self.tilemap
