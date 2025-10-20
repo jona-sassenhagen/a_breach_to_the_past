@@ -66,6 +66,19 @@ class AssetManager:
         except Exception:
             pass
 
+        phantom_idle_right_y = 128
+        phantom_idle_left_y = 144
+        try:
+            pyxel.images[0].load(0, phantom_idle_right_y, "sprite_assets/phantom_idle_anim_right_strip_4.png")
+            self._register_anim_strip("phantom_idle_right", 0, phantom_idle_right_y, 4, frame_w=16, base_x=0)
+        except Exception:
+            pass
+        try:
+            pyxel.images[0].load(0, phantom_idle_left_y, "sprite_assets/phantom_idle_anim_left_strip_4.png")
+            self._register_anim_strip("phantom_idle_left", 0, phantom_idle_left_y, 4, frame_w=16, base_x=0)
+        except Exception:
+            pass
+
         self.parse_anim_mapping("sprite_assets/char_1.txt", 0, "player", 0)
         self.parse_anim_mapping("sprite_assets/slime.txt", 0, "slime", 16)
         self.parse_anim_mapping("sprite_assets/spider.txt", 0, "spider", 32)

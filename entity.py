@@ -489,3 +489,136 @@ class Spinner(Enemy):
         self.anim_timer = 0
         total = len(seq)
         self._attack_anim_ticks = max(1, total) * max(1, self._attack_step_ticks)
+
+
+class Phantom(Enemy):
+    def __init__(self, x, y, tilemap, asset_manager):
+        super().__init__(x, y, tilemap, asset_manager, move_speed=3, attack_type='ranged')
+        self.hp = 3
+        self.anim_name = "phantom_idle_right"
+        self._default_anim = "phantom_idle_right"
+        self._left_anim = "phantom_idle_left"
+        # reuse lunge-style offset animation
+        self._dash_t = 0
+        self._dash_forward = 4
+        self._dash_linger = 6
+        self._dash_retreat = 6
+        self._dash_dx_px = 0
+        self._dash_dy_px = 0
+
+    def _set_facing(self, dx: int):
+        if dx < 0:
+            self.anim_name = self._left_anim
+        else:
+            self.anim_name = self._default_anim
+
+    def get_attack_positions(self, target: Entity) -> List[Tuple[int, int]]:
+        candidates: List[Tuple[int, int]] = []
+        for dist in (1, 2):
+            for dx, dy in ((-dist, 0), (dist, 0), (0, -dist), (0, dist)):
+                cx = target.x + dx
+                cy = target.y + dy
+                if 0 <= cx < MAP_WIDTH and 0 <= cy < MAP_HEIGHT:
+                    tile = self.tilemap.tiles[cy][cx]
+                    door_info = self.tilemap.tile_states.get((cx, cy))
+                    if is_walkable_tile(tile, door_info):
+                        candidates.append((cx, cy))
+            if candidates:
+                break
+        if not candidates:
+            candidates.append((self.x, self.y))
+        # Sort by Manhattan distance to player so closer positions are preferred
+        candidates.sort(key=lambda pos: abs(pos[0] - target.x) + abs(pos[1] - target.y))
+        return candidates
+
+    def move_towards_target(self, target: Optional[Entity], all_entities: List[Entity]):
+        if target is None:
+            return
+        path = self.pathfinding(target.x, target.y)
+        if not path:
+            return
+        for i in range(1, min(len(path), self.move_speed + 1)):
+            if self.move(path[i][0] - self.x, path[i][1] - self.y, all_entities):
+                self.x, self.y = path[i]
+            else:
+                break
+
+    def telegraph(self, target: Entity, all_entities: Optional[List[Entity]] = None):
+        if target is None:
+            return None
+        dx = target.x - self.x
+        dy = target.y - self.y
+        if abs(dx) >= abs(dy):
+            step_x = 1 if dx > 0 else -1 if dx < 0 else 0
+            step_y = 0
+        else:
+            step_x = 0
+            step_y = 1 if dy > 0 else -1 if dy < 0 else 0
+        if step_x == 0 and step_y == 0:
+            step_x = 1
+        self._set_facing(step_x)
+        tiles: List[Tuple[int, int]] = []
+        for i in range(1, 3):
+            tx = self.x + step_x * i
+            ty = self.y + step_y * i
+            if 0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT:
+                tile = self.tilemap.tiles[ty][tx]
+                door_info = self.tilemap.tile_states.get((tx, ty))
+                if not is_walkable_tile(tile, door_info):
+                    break
+                tiles.append((tx, ty))
+            if not tiles:
+                return None
+        return {
+            'start': (self.x, self.y),
+            'type': 'phantom_dash',
+            'tiles': tiles,
+            'attacker': self,
+        }
+
+    def trigger_dash(self, tiles: List[Tuple[int, int]]):
+        if not tiles:
+            return
+        end_x, end_y = tiles[-1]
+        dx_tiles = end_x - self.x
+        dy_tiles = end_y - self.y
+        self._dash_dx_px = dx_tiles * TILE_SIZE
+        self._dash_dy_px = dy_tiles * TILE_SIZE
+        self._dash_t = 1
+        if dx_tiles != 0:
+            self._set_facing(dx_tiles)
+
+    def update_animation(self):
+        super().update_animation()
+        if self._dash_t > 0:
+            self._dash_t += 1
+            total = self._dash_forward + self._dash_linger + self._dash_retreat
+            if self._dash_t > total:
+                self._dash_t = 0
+                self._dash_dx_px = 0
+                self._dash_dy_px = 0
+
+    def draw(self):
+        ox = oy = 0
+        if self._dash_t > 0:
+            f = 0.0
+            t = self._dash_t
+            fwd = max(1, self._dash_forward)
+            linger = self._dash_linger
+            ret = max(1, self._dash_retreat)
+            if t <= fwd:
+                x = t / fwd
+                f = 1 - (1 - x) * (1 - x)
+            elif t <= fwd + linger:
+                f = 1.0
+            else:
+                x = (t - fwd - linger) / ret
+                f = (1 - x) * (1 - x)
+            ox = int(self._dash_dx_px * f)
+            oy = int(self._dash_dy_px * f)
+
+        if self.anim_name:
+            anim_seq = self.asset_manager.get_anim(self.anim_name)
+            if anim_seq:
+                img_bank, u, v = anim_seq[self.anim_frame]
+                pyxel.blt(self.x * TILE_SIZE + ox, self.y * TILE_SIZE + oy, img_bank, u, v, TILE_SIZE, TILE_SIZE, 0)

@@ -3,7 +3,7 @@ import time
 import math
 from enum import Enum
 from map import Tilemap, is_walkable_tile
-from entity import SlimeProjectile, Decor, Treasure, DumbSlime, Spider, Spinner
+from entity import SlimeProjectile, Decor, Treasure, DumbSlime, Spider, Spinner, Phantom
 import random
 import ai
 from vfx import VfxManager
@@ -74,7 +74,7 @@ class GamePhase(Enum):
 class CombatManager:
     def __init__(self, player, enemies, tilemap):
         self.player = player
-        self.enemies = enemies
+        self.enemies = list(enemies)
         self.tilemap = tilemap
         base_variant_count = (
             player.asset_manager.get_tile_variant_count("floor_center")
@@ -115,6 +115,9 @@ class CombatManager:
         self.locked_enemy_plan: list[dict] = []
         self.pending_move_tile: tuple[int, int] | None = None
         self.pending_move_path: list[tuple[int, int]] = []
+        self.turn_count = 0
+        self.monsters_killed = 0
+        self._counted_dead = set()
 
         # Deterministic initiative order and attack order visualization
         self.enemy_initiative = list(enemies)
@@ -125,13 +128,6 @@ class CombatManager:
         self.attack_index = 0
         self.anim_lock_ticks = 0
         self.next_phase_override = None
-
-        # Deterministic initiative order (static spawn order)
-        self.enemy_initiative = list(enemies)
-
-        # Sequential attack processing
-        self.attack_queue = []
-        self.attack_index = 0
 
         # Visuals for simultaneous attack rendering
         self.attack_renders = []  # snapshot of telegraphs to render on attack frame
@@ -157,6 +153,11 @@ class CombatManager:
             GamePhase.ENEMY_ATTACK: GamePhase.PROJECTILE_RESOLUTION,
             GamePhase.PROJECTILE_RESOLUTION: GamePhase.ENEMY_MOVE_TELEGRAPH, # Loop back
         }
+
+        if not self.enemies:
+            self._clear_room_contents()
+            self._spawn_room_contents(self._room_progress())
+        self.enemy_initiative = list(self.enemies)
 
     def update(self):
         if self.player_dead or self.victory:
@@ -235,7 +236,8 @@ class CombatManager:
         if self.phase_started:
             # On very first round, place random decor on floor tiles
             if not self._decor_initialized:
-                self._spawn_random_decor()
+                decor_target = self._sample_decor_count(self._room_progress())
+                self._spawn_random_decor(target_count=decor_target)
                 self._decor_initialized = True
             # At round start, decay rubble one step (remove those expired)
             self._decay_rubble_once()
@@ -265,13 +267,8 @@ class CombatManager:
                     path = action.get('path') or []
                     old_pos = (enemy.x, enemy.y)
                     if path:
-                        all_entities = [self.player] + self.enemies + self.decor_objects
                         for step in path:
-                            nx, ny = step
-                            if enemy.can_occupy(nx, ny, all_entities):
-                                enemy.x, enemy.y = nx, ny
-                            else:
-                                break
+                            enemy.x, enemy.y = step
                     new_pos = (enemy.x, enemy.y)
                     if new_pos != old_pos:
                         self.move_arrow = {'start': old_pos, 'end': new_pos}
@@ -322,8 +319,7 @@ class CombatManager:
                     self._set_pending_move(clicked_tile, path)
                     return
             if clicked_tile and self._handle_door_click(clicked_tile, all_entities):
-                self._reset_hover_preview()
-                self._clear_pending_move()
+                self._finalize_player_turn()
                 return
 
         moved = self.player.try_keyboard_move(all_entities)
@@ -333,8 +329,7 @@ class CombatManager:
             self._clear_pending_move()
 
         if self._check_keyboard_room_transition():
-            self._reset_hover_preview()
-            self._clear_pending_move()
+            self._finalize_player_turn()
             return
 
         if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) or getattr(self.player, 'moves_left', 0) <= 0:
@@ -354,6 +349,7 @@ class CombatManager:
         # Partition telegraphs into projectile-based and immediate (melee) attacks
         projectile_teles = []
         melee_teles = []
+        phantom_dashes: list[tuple] = []
         for t in telegraphs:
             if t.get('type') in ('bouncing', 'ranged'):
                 projectile_teles.append(t)
@@ -383,10 +379,10 @@ class CombatManager:
             # Apply shooter self-damage at fire time (e.g., slime recoil)
             if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
                 attacker.hp -= 1
-                if attacker.hp <= 0 and attacker in self.enemies:
+                if attacker.hp <= 0:
                     ax, ay = attacker.x, attacker.y
                     self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
-                    self.enemies.remove(attacker)
+                    self._register_enemy_death(attacker)
 
         # Compute melee hits simultaneously against snapshot of positions
         for t in melee_teles:
@@ -416,6 +412,11 @@ class CombatManager:
             affected_tiles = []
             if t.get('type') == 'plus':
                 affected_tiles = list(t.get('tiles', []))
+            elif t.get('type') == 'phantom_dash':
+                tiles = list(t.get('tiles', []))
+                if tiles:
+                    phantom_dashes.append((attacker, tiles, t.get('start')))
+                affected_tiles = tiles
             else:
                 # Single target position
                 if target_pos is None:
@@ -491,8 +492,15 @@ class CombatManager:
             self.vfx_manager.add_particles(vx * TILE_SIZE + TILE_SIZE / 2, vy * TILE_SIZE + TILE_SIZE / 2, 6, 12)
 
         # Prune dead enemies after simultaneous resolution
-        if self.enemies:
-            self.enemies = [e for e in self.enemies if e.hp > 0]
+        self._prune_dead_enemies()
+
+        # Move phantom attackers along their dash path after damage resolves
+        if phantom_dashes:
+            for attacker, path, _ in phantom_dashes:
+                if attacker is None or getattr(attacker, 'hp', 0) <= 0:
+                    continue
+                if hasattr(attacker, 'trigger_dash'):
+                    attacker.trigger_dash(path)
 
         # Spawn treasure for melee decor breaks
         for ev in decor_break_events:
@@ -518,12 +526,15 @@ class CombatManager:
         # Projectiles will resolve in the next phase
         self.phase_complete = True
 
-    def _spawn_random_decor(self):
-        # Choose 3 to 5 random decor names from asset manager
+    def _spawn_random_decor(self, target_count: int | None = None):
+        # Choose random decor names from asset manager
         names = [n for n in getattr(self.player.asset_manager, 'decor_names', []) if n]
         if not names:
             return
-        count = random.randint(3, 5)
+        if target_count is None:
+            count = random.randint(3, 5)
+        else:
+            count = max(0, target_count)
         # Collect candidate floor tiles not blocked by doors and not occupied by entities
         candidates = []
         for y in range(MAP_HEIGHT):
@@ -577,20 +588,7 @@ class CombatManager:
         self.player.tilemap = self.tilemap
         for e in self.enemies:
             e.tilemap = self.tilemap
-        # Clear state
-        self.telegraphs = []
-        self.projectiles = []
-        self.vfx_manager.particles = []
-        self.decor_objects = []
-        self.treasure_objects = []
-        self.treasure_pending = []
-        self.enemy_action_queue = []
-        self.attack_queue = []
-        self.attack_renders = []
-        self.attack_render_ticks = 0
-        self.move_arrow = None
-        self.move_arrow_ticks = 0
-        self.action_timer = 0
+        self._clear_room_contents()
         # Position player at opposite side corresponding to entry
         if entry_from == 'top':
             self.player.y = MAP_HEIGHT - 2
@@ -598,39 +596,8 @@ class CombatManager:
         elif entry_from == 'bottom':
             self.player.y = 1
             self.player.x = max(1, min(MAP_WIDTH - 2, entry_x))
-        # Spawn decor immediately
-        self._spawn_random_decor()
-        self._decor_initialized = True
-        # Spawn enemies (2-3 random)
-        self.enemies = []
-        enemy_classes = []
-        try:
-            enemy_classes = [DumbSlime, Spider, Spinner]
-        except Exception:
-            # Fallback in case some classes are unavailable
-            from entity import DumbSlime as _DS, Spider as _Sp
-            enemy_classes = [_DS, _Sp]
-        num = random.randint(2, 3)
-        candidates = []
-        for y in range(MAP_HEIGHT):
-            for x in range(MAP_WIDTH):
-                tile = self.tilemap.tiles[y][x]
-                if tile and tile.startswith('floor') and not self.tilemap.is_open_door(x, y):
-                    if not self.player.occupies(x, y):
-                        candidates.append((x, y))
-        random.shuffle(candidates)
-        for i in range(min(num, len(candidates))):
-            x, y = candidates[i]
-            cls = random.choice(enemy_classes)
-            self.enemies.append(cls(x, y, self.tilemap, self.player.asset_manager))
-        # Reset enemy initiative to the new enemies
-        self.enemy_initiative = list(self.enemies)
-        # Occasionally free treasure (0-2)
-        free = random.randint(0, 2)
-        random.shuffle(candidates)
-        for i in range(min(free, len(candidates))):
-            x, y = candidates[i]
-            self._queue_treasure(x, y, delay=0)
+        progress = self._room_progress()
+        self._spawn_room_contents(progress)
         # Reset phase to enemy telegraph of new room
         self.current_phase = GamePhase.ENEMY_MOVE_TELEGRAPH
         self.phase_started = True
@@ -657,10 +624,10 @@ class CombatManager:
             # Slime self-damage on actual shot
             if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
                 attacker.hp -= 1
-                if attacker.hp <= 0 and attacker in self.enemies:
+                if attacker.hp <= 0:
                     ax, ay = attacker.x, attacker.y
                     self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
-                    self.enemies.remove(attacker)
+                    self._register_enemy_death(attacker)
         elif telegraph.get('type') == 'ranged':
             start_pos = telegraph['start']
             target_pos = telegraph['pos']
@@ -670,10 +637,10 @@ class CombatManager:
             # Self-damage for ranged attackers if applicable (none currently besides slime)
             if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
                 attacker.hp -= 1
-                if attacker.hp <= 0 and attacker in self.enemies:
+                if attacker.hp <= 0:
                     ax, ay = attacker.x, attacker.y
                     self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
-                    self.enemies.remove(attacker)
+                    self._register_enemy_death(attacker)
         else:
             target_pos = telegraph['pos']
             attacker = telegraph.get('attacker')
@@ -702,7 +669,7 @@ class CombatManager:
                     self.vfx_manager.add_particles(target_pos[0] * TILE_SIZE + TILE_SIZE / 2, target_pos[1] * TILE_SIZE + TILE_SIZE / 2, 8, 10)
 
             # Prune dead enemies immediately
-            self.enemies = [enemy for enemy in self.enemies if enemy.hp > 0]
+            self._prune_dead_enemies()
 
             # Trigger spider lunge toward the attacked square (visual bounce)
             if attacker is not None and hasattr(attacker, 'trigger_lunge'):
@@ -734,10 +701,10 @@ class CombatManager:
                 # Slime self-damage on actual shot
                 if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
                     attacker.hp -= 1
-                    if attacker.hp <= 0 and attacker in self.enemies:
+                    if attacker.hp <= 0:
                         ax, ay = attacker.x, attacker.y
                         self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
-                        self.enemies.remove(attacker)
+                        self._register_enemy_death(attacker)
             elif telegraph.get('type') == 'ranged':
                 start_pos = telegraph['start']
                 target_pos = telegraph['pos']
@@ -747,10 +714,10 @@ class CombatManager:
                 # Self-damage for ranged attackers if applicable (none currently besides slime)
                 if attacker is not None and hasattr(attacker, 'anim_name') and 'slime' in getattr(attacker, 'anim_name', ''):
                     attacker.hp -= 1
-                    if attacker.hp <= 0 and attacker in self.enemies:
+                    if attacker.hp <= 0:
                         ax, ay = attacker.x, attacker.y
                         self.vfx_manager.add_particles(ax * TILE_SIZE + TILE_SIZE / 2, ay * TILE_SIZE + TILE_SIZE / 2, 8, 20)
-                        self.enemies.remove(attacker)
+                        self._register_enemy_death(attacker)
             else:
                 target_pos = telegraph['pos']
                 attacker = telegraph.get('attacker')
@@ -773,7 +740,7 @@ class CombatManager:
                             enemy.register_grief(attacker)
                         self.vfx_manager.add_particles(target_pos[0] * TILE_SIZE + TILE_SIZE / 2, target_pos[1] * TILE_SIZE + TILE_SIZE / 2, 8, 10)
         
-        self.enemies = [enemy for enemy in self.enemies if enemy.hp > 0]
+        self._prune_dead_enemies()
         self.telegraphs = []
 
     def update_projectiles(self):
@@ -858,8 +825,7 @@ class CombatManager:
                             # Queue treasure to appear after splatter for decor destruction
                             self._queue_treasure(tile_x, tile_y)
         # Immediately prune dead enemies so they "die now" (with VFX already spawned)
-        if self.enemies:
-            self.enemies = [e for e in self.enemies if e.hp > 0]
+        self._prune_dead_enemies()
 
         if not self.projectiles:
             self.phase_complete = True
@@ -1174,6 +1140,7 @@ class CombatManager:
     def _finalize_player_turn(self):
         if self.phase_complete:
             return
+        self.turn_count += 1
         self.phase_complete = True
         self.post_player_delay = self.post_player_delay_frames
         self._reset_hover_preview()
@@ -1190,6 +1157,198 @@ class CombatManager:
             if end != start:
                 predictions.append({'start': start, 'end': end})
         return predictions
+
+    def _register_enemy_death(self, enemy):
+        if enemy in self._counted_dead:
+            if enemy in self.enemies:
+                try:
+                    self.enemies.remove(enemy)
+                except ValueError:
+                    pass
+            if enemy in self.enemy_initiative:
+                try:
+                    self.enemy_initiative.remove(enemy)
+                except ValueError:
+                    pass
+            return
+        self._counted_dead.add(enemy)
+        self.monsters_killed += 1
+        if enemy in self.enemies:
+            try:
+                self.enemies.remove(enemy)
+            except ValueError:
+                pass
+        if enemy in self.enemy_initiative:
+            try:
+                self.enemy_initiative.remove(enemy)
+            except ValueError:
+                pass
+        if self.locked_enemy_plan:
+            self.locked_enemy_plan = [entry for entry in self.locked_enemy_plan if entry.get('enemy') is not enemy]
+        if self.enemy_action_queue:
+            self.enemy_action_queue = [entry for entry in self.enemy_action_queue if entry.get('enemy') is not enemy]
+        if self.attack_queue:
+            self.attack_queue = [entry for entry in self.attack_queue if entry.get('attacker') is not enemy and entry.get('enemy') is not enemy]
+
+    def _prune_dead_enemies(self):
+        alive: list = []
+        for enemy in self.enemies:
+            if enemy.hp > 0:
+                alive.append(enemy)
+            else:
+                if enemy not in self._counted_dead:
+                    self._counted_dead.add(enemy)
+                    self.monsters_killed += 1
+                if enemy in self.enemy_initiative:
+                    try:
+                        self.enemy_initiative.remove(enemy)
+                    except ValueError:
+                        pass
+                if self.locked_enemy_plan:
+                    self.locked_enemy_plan = [entry for entry in self.locked_enemy_plan if entry.get('enemy') is not enemy]
+                if self.enemy_action_queue:
+                    self.enemy_action_queue = [entry for entry in self.enemy_action_queue if entry.get('enemy') is not enemy]
+                if self.attack_queue:
+                    self.attack_queue = [entry for entry in self.attack_queue if entry.get('attacker') is not enemy and entry.get('enemy') is not enemy]
+        self.enemies = alive
+
+    def _clear_room_contents(self):
+        self.telegraphs = []
+        self.projectiles = []
+        self.vfx_manager.particles = []
+        self.decor_objects = []
+        self.treasure_objects = []
+        self.treasure_pending = []
+        self.enemy_action_queue = []
+        self.attack_queue = []
+        self.attack_renders = []
+        self.attack_render_ticks = 0
+        self.move_arrow = None
+        self.move_arrow_ticks = 0
+        self.action_timer = 0
+        self._counted_dead = set()
+        self.locked_enemy_plan = []
+        self.pending_move_tile = None
+        self.pending_move_path = []
+        self.enemies = []
+        self.enemy_initiative = []
+        self._decor_initialized = False
+
+    def _spawn_room_contents(self, progress: float):
+        self._spawn_random_decor(target_count=self._sample_decor_count(progress))
+        self._decor_initialized = True
+        self._spawn_enemies_for_room(progress)
+        self.enemy_initiative = list(self.enemies)
+
+    def _spawn_enemies_for_room(self, progress: float):
+        try:
+            enemy_classes = [DumbSlime, Spider, Spinner, Phantom]
+        except Exception:
+            from entity import DumbSlime as _DS, Spider as _Sp
+            enemy_classes = [_DS, _Sp]
+
+        candidates = []
+        for y in range(MAP_HEIGHT):
+            for x in range(MAP_WIDTH):
+                tile = self.tilemap.tiles[y][x]
+                if tile and tile.startswith('floor') and not self.tilemap.is_open_door(x, y):
+                    door_info = self.tilemap.tile_states.get((x, y))
+                    if door_info and door_info.get('state') == 'closed':
+                        continue
+                    occupied = False
+                    for ent in [self.player] + self.enemies + self.decor_objects:
+                        if ent.occupies(x, y):
+                            occupied = True
+                            break
+                    if not occupied:
+                        candidates.append((x, y))
+
+        if not candidates:
+            return
+
+        random.shuffle(candidates)
+        num_enemies = min(self._sample_enemy_count(progress), len(candidates))
+        enemy_spots = candidates[:num_enemies]
+        for (x, y) in enemy_spots:
+            cls = random.choice(enemy_classes)
+            self.enemies.append(cls(x, y, self.tilemap, self.player.asset_manager))
+
+        reserved = set(enemy_spots)
+        remaining = [pos for pos in candidates if pos not in reserved]
+        free = self._sample_free_treasure(progress, len(remaining))
+        random.shuffle(remaining)
+        for (x, y) in remaining[:free]:
+            self._queue_treasure(x, y, delay=0)
+
+    def _room_progress(self) -> float:
+        if self.max_rooms <= 1:
+            return 0.0
+        return max(0.0, min(1.0, (self.room_index - 1) / (self.max_rooms - 1)))
+
+    def _sample_enemy_count(self, progress: float) -> int:
+        weights = []
+        for count in range(1, 6):
+            early_weight = 6 - count
+            late_weight = count
+            weight = (1.0 - progress) * early_weight + progress * late_weight
+            weights.append(max(0.01, weight))
+        pick = random.random() * sum(weights)
+        cumulative = 0.0
+        for count, weight in zip(range(1, 6), weights):
+            cumulative += weight
+            if pick <= cumulative:
+                return count
+        return 5
+
+    def _sample_decor_count(self, progress: float) -> int:
+        base = 1 + int(progress * 3)
+        max_decor = min(5, base + 1)
+        min_decor = min(base, max_decor)
+        return random.randint(min_decor, max_decor)
+
+    def _sample_free_treasure(self, progress: float, max_slots: int) -> int:
+        attempts = max(1, 3 - int(progress * 2))
+        chance = max(0.15, 0.75 - 0.5 * progress)
+        count = 0
+        for _ in range(attempts):
+            if random.random() < chance:
+                count += 1
+        return min(count, max_slots)
+
+    def _room_progress(self) -> float:
+        if self.max_rooms <= 1:
+            return 0.0
+        return max(0.0, min(1.0, (self.room_index - 1) / (self.max_rooms - 1)))
+
+    def _sample_enemy_count(self, progress: float) -> int:
+        weights = []
+        for count in range(1, 6):
+            early_weight = 6 - count
+            late_weight = count
+            weight = (1.0 - progress) * early_weight + progress * late_weight
+            weights.append(max(0.01, weight))
+        pick = random.random() * sum(weights)
+        cumulative = 0.0
+        for count, weight in zip(range(1, 6), weights):
+            cumulative += weight
+            if pick <= cumulative:
+                return count
+        return 5
+
+    def _sample_decor_count(self, progress: float) -> int:
+        base = 1 + int(progress * 3)
+        max_decor = min(5, base + 1)
+        min_decor = min(base, max_decor)
+        return random.randint(min_decor, max_decor)
+
+    def _sample_free_treasure(self, progress: float, max_slots: int) -> int:
+        attempts = max(1, 3 - int(progress * 2))
+        chance = max(0.15, 0.75 - 0.5 * progress)
+        count = 0
+        for _ in range(attempts):
+            if random.random() < chance:
+                count += 1
+        return min(count, max_slots)
 
     def _start_room_transition(self, entry_from, door_x):
         if self.victory:
@@ -1362,6 +1521,18 @@ class CombatManager:
                     ey = ty * TILE_SIZE + TILE_SIZE // 2
                     pyxel.line(sx, sy, ex, ey, 8)
                     pyxel.circ(ex, ey, 2, 8)
+            elif telegraph.get('type') == 'phantom_dash':
+                start_pos = telegraph['start']
+                sx = start_pos[0] * TILE_SIZE + TILE_SIZE // 2
+                sy = start_pos[1] * TILE_SIZE + TILE_SIZE // 2
+                tiles = telegraph.get('tiles', [])
+                last_x, last_y = sx, sy
+                for (tx, ty) in tiles:
+                    ex = tx * TILE_SIZE + TILE_SIZE // 2
+                    ey = ty * TILE_SIZE + TILE_SIZE // 2
+                    pyxel.line(last_x, last_y, ex, ey, 8)
+                    pyxel.circ(ex, ey, 2, 8)
+                    last_x, last_y = ex, ey
             else:
                 start_pos = telegraph['start']
                 end_pos = telegraph['pos']

@@ -11,7 +11,7 @@ import pyxel
 import time
 from asset_manager import AssetManager
 from map import Tilemap
-from entity import Player, DumbSlime, Spider, Spinner
+from entity import Player, DumbSlime, Spider, Spinner, Phantom
 from combat import CombatManager
 from constants import TILE_SIZE
 
@@ -100,11 +100,7 @@ class App:
         start_x = getattr(self.tilemap, 'top_door_xs', [1])[0]
         self.player = Player(start_x, 1, self.tilemap, self.asset_manager)
         setattr(self.player, 'coins', 0)
-        enemies = [
-            DumbSlime(7, 6, self.tilemap, self.asset_manager),   # Dumb slime
-            Spider(6, 2, self.tilemap, self.asset_manager),
-            Spinner(3, 6, self.tilemap, self.asset_manager)
-        ]
+        enemies: list = []
         self.enemies = enemies
         self.combat_manager = CombatManager(self.player, self.enemies, self.tilemap)
 
@@ -149,6 +145,13 @@ class App:
         pyxel.text(3, base_y + 1, room_text, 0)
         pyxel.text(2, base_y, room_text, 7)
 
+        turns = getattr(self.combat_manager, 'turn_count', 0)
+        turn_text = f"Turns: {turns}"
+        turn_width = len(turn_text) * 4
+        turn_x = max(2, 160 - turn_width - 2)
+        pyxel.text(turn_x + 1, base_y + 1, turn_text, 0)
+        pyxel.text(turn_x, base_y, turn_text, 7)
+
     def draw_title(self):
         pyxel.cls(0)
         text_y = 30
@@ -181,8 +184,14 @@ class App:
     def draw_death_screen(self):
         pyxel.rect(0, 0, 160, 160, 0)
         pyxel.text(20, 60, "You died a gruseome death", 7)
-        pyxel.text(38, 80, "Click to play again", 7)
-        y = 105
+        turns = getattr(self.combat_manager, 'turn_count', 0) if self.combat_manager else 0
+        kills = getattr(self.combat_manager, 'monsters_killed', 0) if self.combat_manager else 0
+        coins = getattr(self.player, 'coins', 0)
+        pyxel.text(32, 72, f"Coins collected: {coins}", 7)
+        pyxel.text(32, 82, f"Turns taken: {turns}", 7)
+        pyxel.text(32, 92, f"Monsters defeated: {kills}", 7)
+        pyxel.text(38, 104, "Click to play again", 7)
+        y = 122
         pyxel.text(20, y, "Credits:", 7)
         y += 10
         for line in self.credits:
@@ -192,10 +201,14 @@ class App:
     def draw_victory_screen(self):
         pyxel.rect(0, 0, 160, 160, 0)
         coins = getattr(self.player, 'coins', 0)
-        pyxel.text(34, 40, "You conquered DUNGEON BREACH!", 7)
-        pyxel.text(42, 60, f"Coins collected: {coins}", 7)
-        pyxel.text(46, 80, "Click to play again", 7)
-        y = 105
+        turns = getattr(self.combat_manager, 'turn_count', 0) if self.combat_manager else 0
+        kills = getattr(self.combat_manager, 'monsters_killed', 0) if self.combat_manager else 0
+        pyxel.text(20, 30, "You conquered DUNGEON BREACH!", 7)
+        pyxel.text(24, 48, f"Coins collected: {coins}", 7)
+        pyxel.text(24, 60, f"Turns taken: {turns}", 7)
+        pyxel.text(24, 72, f"Monsters defeated: {kills}", 7)
+        pyxel.text(32, 92, "Click to play again", 7)
+        y = 115
         pyxel.text(20, y, "Credits:", 7)
         y += 10
         for line in self.credits:
