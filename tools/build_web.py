@@ -56,6 +56,22 @@ def copy_directory(src: Path, dest: Path) -> None:
     shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*IGNORE_PATTERNS))
 
 
+def inject_goatcounter(html_file: Path) -> None:
+    """Inject GoatCounter analytics script into the HTML file."""
+    goatcounter_script = '<script data-goatcounter="https://jona.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>\n'
+
+    content = html_file.read_text()
+
+    # Find the first <script> tag and insert GoatCounter after it
+    first_script_end = content.find('</script>')
+    if first_script_end != -1:
+        # Insert after the closing tag
+        insertion_point = first_script_end + len('</script>')
+        content = content[:insertion_point] + '\n' + goatcounter_script + content[insertion_point:]
+        html_file.write_text(content)
+        print("GoatCounter analytics injected")
+
+
 def main() -> None:
     root = repo_root()
     pyxel_cmd = find_pyxel_executable(root)
@@ -92,6 +108,9 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(app_stage / f"{APP_NAME}.pyxapp", output_dir / f"{APP_NAME}.pyxapp")
     shutil.copy2(app_stage / f"{APP_NAME}.html", output_dir / "index.html")
+
+    # Inject GoatCounter analytics
+    inject_goatcounter(output_dir / "index.html")
 
     print(f"Web build complete -> {output_dir}")
 
